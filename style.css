@@ -1,0 +1,56 @@
+.eve-mineral-table {
+    border-collapse: collapse;
+    margin-bottom: 12px;
+    margin-left: auto;
+    margin-right: auto;
+    width: auto;
+    background: #fff;
+    text-align: center;
+}
+.eve-mineral-table th,
+.eve-mineral-table td {
+    border: 1px solid #ccc;
+    padding: 5px;
+    text-align: center !important;
+    vertical-align: middle;
+}
+.eve-mineral-title {
+    text-align: center;
+    margin-bottom: 2px;
+}
+#eve-mineral-compare-table {
+    text-align: center;
+}
+.eve-mineral-cell-highlight {
+    transition: background 0.2s;
+}
+#eve-mineral-refresh {
+    margin-top: 10px;
+    padding: 7px 16px;
+    background: #4b65e4;
+    color: #fff;
+    border: none;
+    border-radius: 5px;
+    font-weight: bold;
+    cursor: pointer;
+    transition: background 0.2s;
+    display: inline-block;
+}
+#eve-mineral-refresh:disabled {
+    background: #aaa;
+    cursor: not-allowed;
+}
+#eve-mineral-status {
+    font-weight: bold;
+    margin-left: 8px;
+}
+.eve-mineral-refresh-wrap {
+    text-align: center;
+    margin-top: 16px;
+}
+#eve-mineral-status {
+    font-weight: bold;
+    margin-top: 8px;
+    margin-left: 0;
+    display: block;
+}
