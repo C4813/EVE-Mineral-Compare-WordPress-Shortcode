@@ -5,3 +5,5 @@ Adds a shortcode [eve_mineral_compare] to display two simple tables calling the 
 Price Data is cached in `wp-content/uploads/eve-mineral-compare/cache`.
 
 A "Refresh Prices" button appears at the bottom of the tables. If the cache is older than 6 hours, price data will be called and update. If it is younger than 6 hours, it will use the cached data.
+
+I do not plan to expand the functionality of this plugin and consider it complete.
