@@ -2,8 +2,10 @@
 jQuery(function ($) {
   var ASSUMED_UNITS = 100000;      // pseudo cap for single-price legs
   var emcRefreshXhr = null;        // tracks the current AJAX request
-  var COOLDOWN_SEC = 10;
+  var COOLDOWN_SEC = 20;
   var LS_NEXT_REFRESH_AT = 'emcNextRefreshAt';
+  var LS_BUY_FROM  = 'emcBuyFrom';
+  var LS_SELL_TO   = 'emcSellTo';
 
   // ---------- utils ----------
   function formatNumber(val) {
@@ -26,7 +28,6 @@ jQuery(function ($) {
   }
 
   // ---------- standings & fee math ----------
-  // EVE-style effective standing blend (approximation you previously used)
   function calcEffectiveStanding(baseStanding, connectionsSkill, diplomacySkill) {
     baseStanding = Number(baseStanding) || 0;
     if (baseStanding === 0) return 0;
@@ -41,12 +42,10 @@ jQuery(function ($) {
     return Math.round(eff * 100) / 100;
   }
 
-  // Sales tax w/ Accounting (you used 7.5% base with -11%/lvl)
   function calcSalesTax(accountingLevel) {
     return 0.075 * (1 - (0.11 * (Number(accountingLevel) || 0)));
   }
 
-  // Broker fee w/ Broker Relations + standings
   function calcBrokerFee(brokerRelationsLevel, factionStanding, corpStanding) {
     var fee = 0.03 - 0.003 * (Number(brokerRelationsLevel) || 0)
                     - 0.0003 * (Number(factionStanding)  || 0)
@@ -98,7 +97,7 @@ jQuery(function ($) {
     var bestHub = null;
     var bestPrice = null;
 
-    $.each(mineral.hubs, function (hubName, hv) {
+    jQuery.each(mineral.hubs, function (hubName, hv) {
       if (allow && !allow[hubName]) return;
       var price = hv && hv[field];
       if (price == null || price === 'N/A') return;
@@ -115,35 +114,40 @@ jQuery(function ($) {
   }
 
   // ---------- trade simulation ----------
-  // Applies rules you specified:
-  // BUY from buy: brokerage ADDED; price uses min(highest buys across hubs)
-  // BUY from sell: no fee;      price uses min(lowest sells across hubs)
-  // SELL to buy:   tax only;    price uses max(highest buys across hubs)
-  // SELL to sell:  tax + broker;price uses max(highest sells across hubs)
-  // Uses ladders for the legs that match orderbook (buy from sell / sell to buy)
+  // Applies rules:
+  // BUY from buy: brokerage ADDED; price uses min(highest buys across hubs)  → synthetic
+  // BUY from sell: no fee;      price uses min(lowest sells across hubs)     → ladder
+  // SELL to buy:   tax only;    price uses max(highest buys across hubs)     → ladder
+  // SELL to sell:  tax + broker;price uses max(highest sells across hubs)    → synthetic
+  // Uses full orderbook ladders for any leg set to match live orders (buy from sell / sell to buy)
   function simulateDepthAcrossOrders(mineral, buyType, sellType, qtyLimit, allowedHubs, brokerageFees, salesTaxRates, minMarginPct) {
     if (!mineral || !mineral.hubs) return null;
 
-    // BUYING:
-    var buyBest = (buyType === 'buy')
-      ? pickHub(mineral, 'buy',  'min', allowedHubs)
-      : pickHub(mineral, 'sell', 'min', allowedHubs);
+    var MAX_SAFE_TOTAL = 1e15; // cap for running totals (cost/revenue)
+    var MAX_QTY_CAP    = 1e5;  // guardrail ONLY for non-ladder scenarios (100k)
 
-    // SELLING:
+    // BUYING hub/price pick
+    var buyBest = (buyType === 'buy')
+      ? pickHub(mineral, 'buy',  'min', allowedHubs)   // creating a buy order (synthetic)
+      : pickHub(mineral, 'sell', 'min', allowedHubs);  // instant buy (fulfilling sell ladder)
+
+    // SELLING hub/price pick
     var sellBest = (sellType === 'buy')
-      ? pickHub(mineral, 'buy',  'max', allowedHubs)
-      : pickHub(mineral, 'sell', 'max', allowedHubs);
+      ? pickHub(mineral, 'buy',  'max', allowedHubs)   // instant sell (fulfilling buy ladder)
+      : pickHub(mineral, 'sell', 'max', allowedHubs);  // creating a sell order (synthetic)
 
     if (!buyBest || !sellBest) return null;
 
     var buyHub  = buyBest.hub;
     var sellHub = sellBest.hub;
 
-    var buyUsesLadder  = (buyType  === 'sell'); // buying FROM existing sell orders
-    var sellUsesLadder = (sellType === 'buy');  // selling INTO existing buy orders
+    var buyUsesLadder  = (buyType  === 'sell'); // buying FROM sell orders -> ladder
+    var sellUsesLadder = (sellType === 'buy');  // selling INTO buy orders -> ladder
+    var anyLadder = buyUsesLadder || sellUsesLadder;
 
-    var rawBuyOrders  = buyUsesLadder  ? (mineral.hubs[buyHub] && mineral.hubs[buyHub].sell_orders || []) : [];
-    var rawSellOrders = sellUsesLadder ? (mineral.hubs[sellHub] && mineral.hubs[sellHub].buy_orders || []) : [];
+    // Raw ladders (only when laddering on that side)
+    var rawBuyOrders  = buyUsesLadder  ? (mineral.hubs[buyHub]  && mineral.hubs[buyHub].sell_orders || []) : [];
+    var rawSellOrders = sellUsesLadder ? (mineral.hubs[sellHub] && mineral.hubs[sellHub].buy_orders  || []) : [];
 
     var buyOrders = rawBuyOrders
       .map(function(o){ return ({ price: Number(o.price), vol: Number(o.vol) }); })
@@ -153,24 +157,59 @@ jQuery(function ($) {
       .map(function(o){ return ({ price: Number(o.price), vol: Number(o.vol) }); })
       .filter(function(o){ return isFinite(o.price) && o.price > 0 && isFinite(o.vol) && o.vol > 0; });
 
-    var cap = (qtyLimit != null && isFinite(qtyLimit)) ? Number(qtyLimit) : ASSUMED_UNITS;
+    if (buyUsesLadder)  buyOrders.sort(function(a,b){ return a.price - b.price; }); // cheapest sells first
+    if (sellUsesLadder) sellOrders.sort(function(a,b){ return b.price - a.price; }); // highest buys first
 
+    function sumVol(arr){ return arr.reduce(function(s,o){ return s + (isFinite(o.vol)?o.vol:0); }, 0); }
+    var ladderAvailBuy  = buyUsesLadder  ? sumVol(buyOrders)  : Infinity;
+    var ladderAvailSell = sellUsesLadder ? sumVol(sellOrders) : Infinity;
+
+    // User-set quantity limit (distinct from min margin)
+    var userQtyLimit = (qtyLimit != null && isFinite(qtyLimit) && qtyLimit > 0) ? Number(qtyLimit) : null;
+
+    // Quantity ceiling:
+    // - If userQtyLimit: min(limit, ladder depth) when ladder is used; else min(limit, MAX_QTY_CAP)
+    // - If no userQtyLimit and any ladder: ladder depth (>0)
+    // - If no ladders: ASSUMED_UNITS (guarded by MAX_QTY_CAP)
+    var qtyCeiling;
+    if (userQtyLimit != null) {
+      if (anyLadder) {
+        var ladderBoundForLimit = Math.min(
+          buyUsesLadder ? ladderAvailBuy : Infinity,
+          sellUsesLadder ? ladderAvailSell : Infinity
+        );
+        if (!isFinite(ladderBoundForLimit) || ladderBoundForLimit <= 0) return null;
+        qtyCeiling = Math.min(userQtyLimit, ladderBoundForLimit);
+      } else {
+        qtyCeiling = Math.min(userQtyLimit, MAX_QTY_CAP);
+      }
+    } else if (anyLadder) {
+      var ladderBound = Math.min(
+        buyUsesLadder ? ladderAvailBuy : Infinity,
+        sellUsesLadder ? ladderAvailSell : Infinity
+      );
+      if (!isFinite(ladderBound) || ladderBound <= 0) return null;
+      qtyCeiling = ladderBound; // no MAX_QTY_CAP when a ladder is involved
+    } else {
+      qtyCeiling = Math.min(ASSUMED_UNITS, MAX_QTY_CAP);
+    }
+
+    // For non-ladder legs, synthesize a single pseudo order with qty = qtyCeiling
     if (!buyUsesLadder) {
       var p = Number(buyBest.price);
       if (!isFinite(p) || p <= 0) return null;
-      buyOrders = [{ price: p, vol: cap }];
+      buyOrders = [{ price: p, vol: qtyCeiling }];
     }
     if (!sellUsesLadder) {
       var sp = Number(sellBest.price);
       if (!isFinite(sp) || sp <= 0) return null;
-      sellOrders = [{ price: sp, vol: cap }];
+      sellOrders = [{ price: sp, vol: qtyCeiling }];
     }
 
-    if (buyUsesLadder)  buyOrders.sort(function(a,b){ return a.price - b.price; }); // cheapest sells first
-    if (sellUsesLadder) sellOrders.sort(function(a,b){ return b.price - a.price; }); // highest buys first
-
-    var maxUnits = (qtyLimit == null) ? cap : Number(qtyLimit);
+    // Final max units; only guard with MAX_QTY_CAP when NO ladder is used
+    var maxUnits = qtyCeiling;
     if (!isFinite(maxUnits) || maxUnits <= 0) maxUnits = ASSUMED_UNITS;
+    if (!anyLadder && maxUnits > MAX_QTY_CAP) maxUnits = MAX_QTY_CAP;
 
     var buyFee   = Number(brokerageFees[buyHub]  || 0);
     var sellFee  = Number(brokerageFees[sellHub] || 0);
@@ -190,16 +229,20 @@ jQuery(function ($) {
       var stepCost = buyPrice * stepQty;
       var stepRev  = sellPrice * stepQty;
 
+      if (!isFinite(stepCost) || !isFinite(stepRev)) break;
+
       // Fees
-      if (buyType  === 'buy')  stepCost += stepCost * buyFee; // buy-from-buy adds brokerage
-      if (sellType === 'sell') stepRev  -= stepRev  * sellFee; // sell-to-sell deducts brokerage
+      if (buyType  === 'buy')  stepCost += stepCost * buyFee;  // creating a buy order -> brokerage
+      if (sellType === 'sell') stepRev  -= stepRev  * sellFee; // creating a sell order -> brokerage
       stepRev -= stepRev * tax; // selling always pays tax
 
       var newCost = totalCost + stepCost;
       var newRev  = totalRevenue + stepRev;
-      var stepMargin = newCost > 0 ? ((newRev - newCost) / newCost) * 100 : 0;
 
-      // Only proceed if cumulative margin stays >= user minimum
+      if (!isFinite(newCost) || !isFinite(newRev)) break;
+      if (newCost > 1e15 || newRev > 1e15) break;
+
+      var stepMargin = newCost > 0 ? ((newRev - newCost) / newCost) * 100 : 0;
       if (stepMargin < minMargin) break;
 
       totalCost = newCost;
@@ -232,7 +275,6 @@ jQuery(function ($) {
   }
 
   // ---------- fee table build ----------
-  // Uses skills + standings to compute brokerage/tax per hub
   function updateFeesDisplay() {
     var acct  = +$('.emc-skill-select[data-skill="accounting"]').val() || 0;
     var br    = +$('.emc-skill-select[data-skill="broker_relations"]').val() || 0;
@@ -251,7 +293,7 @@ jQuery(function ($) {
       'Dodixie': { faction: 'gallente_federation',corp: 'federation_navy' }
     };
 
-    $.each(marketMappings, function (hub, ids) {
+    jQuery.each(marketMappings, function (hub, ids) {
       var f = calcEffectiveStanding( +($('.emc-standing-input[data-standing="'+ids.faction+'"]').val()) || 0, conn, diplo);
       var c = calcEffectiveStanding( +($('.emc-standing-input[data-standing="'+ids.corp+'"]').val())    || 0, conn, diplo);
       var fee = calcBrokerFee(br, f, c);
@@ -274,10 +316,13 @@ jQuery(function ($) {
 
     var buyType  = $('#buy-from-select-ext').val()  || 'buy';
     var sellType = $('#sell-to-select-ext').val()   || 'sell';
+    // show note only when both legs are synthetic (no ladder)
+    var showDefaultNote = (buyType === 'buy' && sellType === 'sell');
+    $('#emc-limit-60k-container .emc-limit-note').toggle(showDefaultNote);
     var allowed  = getAllowedHubsExtended();
     var fees     = getBrokerageAndTaxForHub();
     var taxes    = getSalesTaxForHub();
-    var qtyLimit = $('#emc-limit-60k').is(':checked') ? 6000000 : null; // 60 km^3
+    var qtyLimit = $('#emc-limit-60k').is(':checked') ? 6000000 : null; // 6,000,000 units (≈ 60,000 m³)
     var minMargin= parseFloat($('#emc-min-margin').val());
     if (!isFinite(minMargin)) minMargin = 5;
 
@@ -285,7 +330,7 @@ jQuery(function ($) {
     var margins = [], rows = 0;
 
     // data is an object keyed by type_id
-    $.each(data, function (id, m) {
+    jQuery.each(data, function (id, m) {
       if (!m || !m.hubs || !allowed.length) return;
       var sim = simulateDepthAcrossOrders(m, buyType, sellType, qtyLimit, allowed, fees, taxes, minMargin);
       if (!sim || sim.profit <= 0 || sim.margin < minMargin) return;
@@ -304,7 +349,7 @@ jQuery(function ($) {
     });
 
     if (!rows) {
-      $tbody.append('<tr><td colspan="6" style="text-align:center;color:#a00;font-weight:bold">No opportunities meet the current margin threshold.</td></tr>');
+      $tbody.append('<tr><td colspan="6" style="text-align:center;color:#a00;font-weight:bold">No opportunities meet the current filters.</td></tr>');
     }
 
     var el = document.getElementById('eve-mc-extended');
@@ -315,9 +360,20 @@ jQuery(function ($) {
   }
 
   // ---------- events ----------
-  $(document).on('change', '#buy-from-select-ext, #sell-to-select-ext, #emc-limit-60k, .emc-hub-toggle', updateExtendedTradeTable);
+  $(document).on('change', '#buy-from-select-ext', function () {
+    try { localStorage.setItem(LS_BUY_FROM, this.value); } catch (e) {}
+    updateExtendedTradeTable();
+  });
+  $(document).on('change', '#sell-to-select-ext', function () {
+    try { localStorage.setItem(LS_SELL_TO, this.value); } catch (e) {}
+    updateExtendedTradeTable();
+  });
+
+  // other controls that trigger a table update
+  $(document).on('change', '#emc-limit-60k, .emc-hub-toggle', updateExtendedTradeTable);
   $(document).on('input',  '#emc-min-margin', debounce(updateExtendedTradeTable, 200));
 
+  // skills & standings recalc
   $(document).on('change', '.emc-skill-select', function () {
     updateEffectiveStandings();
     updateFeesDisplay();
@@ -396,7 +452,7 @@ jQuery(function ($) {
       },
 
       error: function (xhr, textStatus) {
-        if (textStatus === 'abort') return; // ignore expected aborts
+        if (textStatus === 'abort') return;
         $('#eve-mineral-status').text('AJAX error.');
       }
     });
@@ -448,8 +504,20 @@ jQuery(function ($) {
     // defaults
     $('.emc-skill-select').each(function(){ if (!this.value) this.value = '5'; });
     $('#emc-min-margin').val($('#emc-min-margin').val() || '5');
-    $('#buy-from-select-ext').val($('#buy-from-select-ext').val() || 'buy');
-    $('#sell-to-select-ext').val($('#sell-to-select-ext').val() || 'sell');
+
+    // restore dropdown choices BEFORE any table calculations
+    var savedBuy = null, savedSell = null;
+    try {
+      savedBuy  = localStorage.getItem(LS_BUY_FROM);
+      savedSell = localStorage.getItem(LS_SELL_TO);
+    } catch(e){}
+
+    if (savedBuy)  $('#buy-from-select-ext').val(savedBuy);
+    if (savedSell) $('#sell-to-select-ext').val(savedSell);
+
+    // if nothing saved, ensure sane defaults (buy-from=buy, sell-to=sell)
+    if (!$('#buy-from-select-ext').val())  $('#buy-from-select-ext').val('buy');
+    if (!$('#sell-to-select-ext').val())   $('#sell-to-select-ext').val('sell');
 
     var tries = 0, maxTries = 25;
     var t = setInterval(function () {
