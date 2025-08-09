@@ -21,6 +21,9 @@ Price Data is cached in `wp-content/uploads/eve-mineral-compare/cache`.
 - **Extended Trade Simulation**  
   Simulate trades between hubs, applying skill and standing-based fee reductions, volume limits, and a minimum margin filter.
 
+- **No-Undock Trade Simulation**
+  See the margin percentage for buying from buy and selling to sell within the same trade hubs.
+
 - **Fee Calculations**  
   Dynamically apply brokerage fees and sales tax per hub based on your inputs.
 
