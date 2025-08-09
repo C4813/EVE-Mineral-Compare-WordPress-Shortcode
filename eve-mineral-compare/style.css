@@ -1,4 +1,15 @@
 /* ==========================
+   A11y utility
+   ========================== */
+.screen-reader-text {
+  position: absolute !important;
+  height: 1px; width: 1px;
+  overflow: hidden;
+  clip: rect(1px, 1px, 1px, 1px);
+  white-space: nowrap;
+}
+
+/* ==========================
    Sections / spacing
    ========================== */
 .emc-section {
@@ -170,24 +181,39 @@
   flex-direction: row;
 }
 
-/* Limit control — stacked with helper note beneath */
+/* Limit control — checkbox and helper note beneath */
 #emc-limit-60k-container {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
+  align-items: center; /* centers both the label and note horizontally */
+  text-align: center;
 }
+
 #emc-limit-60k-container .emc-limit-label {
-  display: flex;
-  flex-direction: row-reverse;
+  display: inline-flex;
   align-items: center;
+  flex-direction: row-reverse; /* checkbox on the right */
   gap: 6px;
+  padding-left: 6px; /* optical balance */
 }
+#emc-limit-60k-container .emc-limit-label input[type="checkbox"] {
+  margin: 0;
+}
+
 #emc-limit-60k-container .emc-limit-note {
   margin-top: 2px;
   font-size: 0.85em;
   font-style: italic;
   color: #666;
+  height: 1.2em; /* reserve space to prevent jump */
+  line-height: 1.2em;
+  text-align: center;
+  visibility: hidden;
 }
+#emc-limit-60k-container .emc-limit-note.is-visible {
+  visibility: visible;
+}
+
 /* Superscript in the limit label */
 #emc-limit-60k-container sup {
   font-size: 0.75em;
@@ -195,9 +221,6 @@
   vertical-align: baseline;
   position: relative;
   top: -0.35em;
-}
-#emc-limit-60k-container .emc-limit-note {
-    display: none;
 }
 
 /* ==========================
@@ -224,7 +247,6 @@
   text-align: center;
 }
 
-/* Optional: dedicated section title */
 .emc-section-title {
   text-align: center;
   margin: 16px 0 10px;
@@ -305,9 +327,44 @@
 .emc-td-center { text-align: center !important; }
 .emc-td-right  { text-align: right  !important; }
 .emc-td-nowrap { white-space: nowrap; }
-
-/* Simple hide utility for JS toggles */
 .emc-hidden { display: none !important; }
+
+/* Center Qty (4), Profit (5), and Minimum Margin % (6) in Extended Trade Opportunities */
+#eve-mc-extended th:nth-child(4),
+#eve-mc-extended td:nth-child(4),
+#eve-mc-extended td.emc-td-right:nth-child(4),
+#eve-mc-extended th:nth-child(5),
+#eve-mc-extended td:nth-child(5),
+#eve-mc-extended td.emc-td-right:nth-child(5),
+#eve-mc-extended th:nth-child(6),
+#eve-mc-extended td:nth-child(6),
+#eve-mc-extended td.emc-td-right:nth-child(6) {
+  text-align: center !important;
+}
+
+#eve-mc-extended td:nth-child(6) input[type="number"] {
+  text-align: center;
+}
+
+/* ==========================
+   No Undock Trading Caption
+   ========================== */
+.emc-aux-note {
+  margin-top: -4px;
+  margin-bottom: 8px;
+  font-size: 0.85em;
+  font-style: italic;
+  color: #666;
+  text-align: center;
+}
+
+/* ==========================
+   No Undock Trading Table
+   ========================== */
+#emc-no-undock td,
+#emc-no-undock th {
+  text-align: center;
+}
 
 /* ==========================
    Responsive tweaks
