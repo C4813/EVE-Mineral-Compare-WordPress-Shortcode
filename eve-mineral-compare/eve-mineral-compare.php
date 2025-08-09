@@ -1,15 +1,16 @@
 <?php
 /*
 Plugin Name: EVE Mineral Compare
-Description: Shows best buy/sell prices for EVE minerals at major trade hubs, with AJAX refresh and caching. Adds extended trade simulation table.
-Version: 2.1
+Description: Shows best buy/sell prices for EVE minerals at major trade hubs, with REST refresh and caching. Adds extended trade simulation table.
+Version: 3.0
 Author: Your Name
 */
 
-define('EVE_MINERAL_COMPARE_VERSION', '2.1');
+define('EVE_MINERAL_COMPARE_VERSION', '3.0');
 define('EVE_MINERAL_COMPARE_CACHE_AGE', 6 * 3600);
 define('EVE_MINERAL_COMPARE_MAX_ORDERS_PER_SIDE', 150);
 define('EVE_MINERAL_COMPARE_MAX_PAGES', 5);
+define('EVE_MINERAL_COMPARE_EPS', 0.0001);
 
 /** Atomic write helper (temp file + rename) */
 function emc_atomic_write($path, $data) {
@@ -17,6 +18,24 @@ function emc_atomic_write($path, $data) {
     $bytes = @file_put_contents($tmp, $data, LOCK_EX);
     if ($bytes === false) return false;
     return @rename($tmp, $path);
+}
+
+register_activation_hook(__FILE__, function(){
+    $dir = eve_mineral_compare_cache_dir();
+    if (!is_dir($dir) || !is_writable($dir)) {
+        error_log('EVE Mineral Compare: cache directory not writable on activation: ' . $dir);
+    }
+});
+
+function emc_atomic_write_json($path, $arr) {
+    $json = wp_json_encode($arr, JSON_PARTIAL_OUTPUT_ON_ERROR);
+    if (!is_string($json)) return false;
+    $len = strlen($json);
+    if ($len === 0 || $len > 5 * 1024 * 1024) { // 5MB cap
+        error_log('EVE Mineral Compare: refusing to write JSON (size '.$len.') to ' . $path);
+        return false;
+    }
+    return emc_atomic_write($path, $json);
 }
 
 function eve_mineral_compare_get_minerals() {
@@ -38,7 +57,12 @@ function eve_mineral_compare_get_hubs() {
 
 function eve_mineral_compare_cache_dir() {
     $upload_dir = wp_upload_dir();
-    $dir = trailingslashit($upload_dir['basedir']) . 'eve-mineral-compare/cache/';
+    $basedir = isset($upload_dir['basedir']) ? $upload_dir['basedir'] : '';
+    if (empty($basedir)) {
+        error_log('EVE Mineral Compare: uploads base dir unavailable');
+        $basedir = WP_CONTENT_DIR . '/uploads'; // last resort
+    }
+    $dir = trailingslashit($basedir) . 'eve-mineral-compare/cache/';
     if (!is_dir($dir)) wp_mkdir_p($dir);
 
     // Harden directory: block listing and direct JSON access
@@ -49,6 +73,17 @@ function eve_mineral_compare_cache_dir() {
     if (!file_exists($ht)) {
         @file_put_contents($ht, "Options -Indexes\n<Files *.json>\nRequire all denied\n</Files>\n", LOCK_EX);
     }
+    // Explain cache folder
+    $readme = $dir . 'README.txt';
+    if (!file_exists($readme)) {
+        @file_put_contents($readme,
+            "EVE Mineral Compare cache folder.\n".
+            "Safe to delete; files will be recreated.\n".
+            "JSON files are blocked from direct web access on Apache via .htaccess.\n".
+            "For Nginx, add a location block that denies *.json in this folder.\n".
+            "For IIS, add a web.config rule to block *.json.\n", LOCK_EX);
+    }
+
     return $dir;
 }
 
@@ -75,7 +110,7 @@ function eve_mineral_compare_load_etags() {
     return is_array($m) ? $m : [];
 }
 function eve_mineral_compare_save_etags(array $m) {
-    emc_atomic_write(eve_mineral_compare_etag_file(), json_encode($m, JSON_PARTIAL_OUTPUT_ON_ERROR));
+    emc_atomic_write_json(eve_mineral_compare_etag_file(), $m);
 }
 function eve_mineral_compare_page_key($region, $tid, $page) {
     return "{$region}_{$tid}_{$page}";
@@ -85,22 +120,36 @@ function eve_mineral_compare_page_path($region, $tid, $page) {
 }
 
 /**
- * HTTP GET with small retry/backoff.
+ * HTTP GET with retry/backoff + jitter.
  * Also reads ESI error-limit headers to gently back off when close to limits.
  */
 function eve_mc_http_get($url, $timeout=20, $retries=2) {
+    $parts = wp_parse_url($url);
+    if (!$parts || !isset($parts['host']) || strtolower($parts['host']) !== 'esi.evetech.net' || ($parts['scheme'] ?? '') !== 'https') {
+        return new WP_Error('emc_bad_url', 'Blocked unexpected URL');
+    }
     $args = [
-        'timeout' => $timeout,
+        'timeout'      => $timeout,
+        'redirection'  => 1,
+        'reject_unsafe_urls' => true,
         'headers' => ['User-Agent' => 'EVE Mineral Compare v' . EVE_MINERAL_COMPARE_VERSION]
     ];
     $delay = 0.3;
+    $resp  = null;
     for ($i=0; $i <= $retries; $i++) {
         $resp = wp_remote_get($url, $args);
         if (!is_wp_error($resp)) {
             $code = wp_remote_retrieve_response_code($resp);
-            if ($code === 200) {
-                return $resp;
+            if ($code === 200) return $resp;
+
+            // Back off harder on ESI limits/outages
+            if (in_array($code, [420,429,503], true)) {
+                $reset = (int) wp_remote_retrieve_header($resp, 'x-esi-error-limit-reset');
+                if ($reset > 0) {
+                    usleep(min(3000000, $reset * 500000)); // up to 3s
+                }
             }
+
             // Gentle, generic backoff if ESI error limit is low
             $remain = (int) wp_remote_retrieve_header($resp, 'x-esi-error-limit-remain');
             $reset  = (int) wp_remote_retrieve_header($resp, 'x-esi-error-limit-reset');
@@ -108,7 +157,9 @@ function eve_mc_http_get($url, $timeout=20, $retries=2) {
                 usleep(min(1500000, $reset * 300000)); // 0.3s per sec left, max ~1.5s
             }
         }
-        usleep((int)($delay * 1e6));
+        // add jitter
+        $jitter = mt_rand(0, 100) / 1000.0; // 0–0.1s
+        usleep((int)(($delay + $jitter) * 1e6));
         $delay *= 2;
     }
     return $resp; // return last response (could be WP_Error)
@@ -117,6 +168,7 @@ function eve_mc_http_get($url, $timeout=20, $retries=2) {
 /**
  * Fetch a market page with If-None-Match and local page cache.
  * Returns array|null (decoded JSON) and updates $etagMap by reference.
+ * Captures X-Pages to inform outer loops.
  */
 function eve_mineral_compare_fetch_market_page($region, $tid, $page, array &$etagMap) {
     $key  = eve_mineral_compare_page_key($region, $tid, $page);
@@ -126,6 +178,8 @@ function eve_mineral_compare_fetch_market_page($region, $tid, $page, array &$eta
     $url = "https://esi.evetech.net/latest/markets/{$region}/orders/?datasource=tranquility&order_type=all&type_id={$tid}&page={$page}";
     $args = [
         'timeout' => 20,
+        'redirection' => 1,
+        'reject_unsafe_urls' => true,
         'headers' => ['User-Agent' => 'EVE Mineral Compare v' . EVE_MINERAL_COMPARE_VERSION],
     ];
     if ($etag) $args['headers']['If-None-Match'] = $etag;
@@ -138,6 +192,12 @@ function eve_mineral_compare_fetch_market_page($region, $tid, $page, array &$eta
     $reset  = (int) wp_remote_retrieve_header($resp, 'x-esi-error-limit-reset');
     if ($remain !== 0 && $remain <= 2 && $reset > 0) {
         usleep(min(1500000, $reset * 300000)); // ~0.3s per sec left, capped
+    }
+
+    // Capture pages hint
+    $pagesHdr = (int) wp_remote_retrieve_header($resp, 'x-pages');
+    if ($pagesHdr > 0) {
+        $etagMap['__pages__'.eve_mineral_compare_page_key($region,$tid,0)] = min($pagesHdr, EVE_MINERAL_COMPARE_MAX_PAGES);
     }
 
     $code = wp_remote_retrieve_response_code($resp);
@@ -156,6 +216,9 @@ function eve_mineral_compare_fetch_market_page($region, $tid, $page, array &$eta
 
     if ($code === 200) {
         $body = wp_remote_retrieve_body($resp);
+        if (!is_string($body) || strlen($body) > 8 * 1024 * 1024) { // 8MB cap
+            return null;
+        }
         $json = json_decode($body, true);
         if (is_array($json)) {
             $newEtag = wp_remote_retrieve_header($resp, 'etag');
@@ -201,6 +264,15 @@ function eve_mineral_compare_load_all_cache_chunks() {
     return $merged;
 }
 
+/** Try fresh cache first; fall back to stale chunks if fresh is empty. */
+function eve_mineral_compare_load_cache_fresh_or_stale(&$used_stale = false) {
+    $used_stale = false;
+    $fresh = eve_mineral_compare_load_cache_chunks();
+    if (!empty($fresh)) return $fresh;
+    $used_stale = true;
+    return eve_mineral_compare_load_all_cache_chunks();
+}
+
 function eve_mineral_compare_save_cache_chunks(array $data) {
     // Ensure cache dir guard exists (Nginx-safe). No-op if already there.
     $cacheDir = eve_mineral_compare_cache_dir();
@@ -226,11 +298,24 @@ function eve_mineral_compare_save_cache_chunks(array $data) {
         $out = [];
         foreach ($set as $tid) $out[$tid] = $data[$tid];
         $path = "{$tmpPrefix}_".($i+1).'.json';
-        if (!emc_atomic_write($path, json_encode($out, JSON_PARTIAL_OUTPUT_ON_ERROR))) {
+        if (!emc_atomic_write($path, wp_json_encode($out, JSON_PARTIAL_OUTPUT_ON_ERROR))) {
             error_log('EVE Mineral Compare: failed to write tmp cache chunk ' . ($i+1));
-            return; // abort swap; keep old cache
+            return false; // abort swap; keep old cache
         }
     }
+
+    // Verify all tmp chunks exist before swap
+    for ($i=1; $i<=count($chunks); $i++) {
+        if (!file_exists("{$tmpPrefix}_{$i}.json")) {
+            error_log('EVE Mineral Compare: missing tmp chunk during swap');
+            return false;
+        }
+    }
+
+    // Swap under a filesystem lock to avoid races
+    $lockPath = $cacheDir.'swap.lock';
+    $lock = @fopen($lockPath, 'c');
+    if ($lock) @flock($lock, LOCK_EX);
 
     // Remove old live files, then rename tmp → live
     for ($i=1; $i<=99; $i++) {
@@ -240,6 +325,9 @@ function eve_mineral_compare_save_cache_chunks(array $data) {
     for ($i=1; $i<=count($chunks); $i++) {
         @rename("{$tmpPrefix}_{$i}.json", "{$prefix}_{$i}.json");
     }
+
+    if ($lock) { @flock($lock, LOCK_UN); @fclose($lock); }
+    return true;
 }
 
 function eve_mineral_compare_resolve_system_id($loc_id, &$map, $primary, $secondary, $scope) {
@@ -250,7 +338,12 @@ function eve_mineral_compare_resolve_system_id($loc_id, &$map, $primary, $second
     }
     $resp = eve_mc_http_get("https://esi.evetech.net/latest/universe/stations/{$loc_id}/?datasource=tranquility");
     if (is_wp_error($resp)) { $map[$loc_id] = null; return null; }
-    $body = json_decode(wp_remote_retrieve_body($resp), true);
+    $raw = wp_remote_retrieve_body($resp);
+    if (!is_string($raw) || strlen($raw) > 512 * 1024) { // 512KB cap (station payloads are tiny)
+        $map[$loc_id] = null; 
+        return null;
+    }
+    $body = json_decode($raw, true);
     $map[$loc_id] = $body['system_id'] ?? null;
     return $map[$loc_id];
 }
@@ -266,7 +359,7 @@ function eve_mineral_compare_cache_is_fresh() {
  * Uses ETag-based page cache for market pages.
  * @return array Final dataset
  */
-function eve_mineral_compare_update_cache($force=false, &$refreshed=null, &$partial=false, &$used_stale_backup=false) {
+function eve_mineral_compare_update_cache($force=false, &$refreshed=null, &$partial=false, &$used_stale_backup=false, &$cache_write_ok=true) {
     $minerals = eve_mineral_compare_get_minerals();
     $hubs     = eve_mineral_compare_get_hubs();
     $map_file = eve_mineral_compare_system_map_file();
@@ -292,9 +385,15 @@ function eve_mineral_compare_update_cache($force=false, &$refreshed=null, &$part
 
         foreach ($minerals as $tid => $mname) {
             $buys=[]; $sells=[]; $page=1;
+            $maxPages = EVE_MINERAL_COMPARE_MAX_PAGES;
 
             do {
                 $arr = eve_mineral_compare_fetch_market_page($region, $tid, $page, $etagMap);
+
+                // after first call we might have learned real pages:
+                $hint = $etagMap['__pages__'.eve_mineral_compare_page_key($region,$tid,0)] ?? null;
+                if (is_int($hint) && $hint > 0) $maxPages = min($maxPages, $hint);
+
                 if (!is_array($arr)) break;
 
                 foreach ($arr as $o) {
@@ -315,7 +414,7 @@ function eve_mineral_compare_update_cache($force=false, &$refreshed=null, &$part
                 }
 
                 $page++;
-            } while ($page <= EVE_MINERAL_COMPARE_MAX_PAGES);
+            } while ($page <= $maxPages);
 
             // Sort best-first
             usort($buys,  fn($a,$b)=> $b['price'] <=> $a['price']);
@@ -325,18 +424,18 @@ function eve_mineral_compare_update_cache($force=false, &$refreshed=null, &$part
             $buys  = array_slice($buys,  0, EVE_MINERAL_COMPARE_MAX_ORDERS_PER_SIDE);
             $sells = array_slice($sells, 0, EVE_MINERAL_COMPARE_MAX_ORDERS_PER_SIDE);
 
-            // Top-of-book sums at best price
+            // Top-of-book sums with epsilon
             $bbp = $bsp = null; $bbv = $bsv = 0;
-            if ($buys)  { $bbp = $buys[0]['price'];  foreach ($buys  as $o) if ($o['price'] == $bbp) $bbv += $o['vol']; }
-            if ($sells) { $bsp = $sells[0]['price']; foreach ($sells as $o) if ($o['price'] == $bsp) $bsv += $o['vol']; }
+            if ($buys)  { $bbp = $buys[0]['price'];  foreach ($buys  as $o) if (abs($o['price'] - $bbp) < EVE_MINERAL_COMPARE_EPS) $bbv += $o['vol']; }
+            if ($sells) { $bsp = $sells[0]['price']; foreach ($sells as $o) if (abs($o['price'] - $bsp) < EVE_MINERAL_COMPARE_EPS) $bsv += $o['vol']; }
 
             // Fallback to stale if both missing
             if (($bbp === null && $bsp === null) && isset($old_cache[$tid][$hub_name])) {
                 $fallback = $old_cache[$tid][$hub_name];
                 $bbp = is_numeric($fallback['buy']  ?? null) ? (float)$fallback['buy']  : null;
                 $bsp = is_numeric($fallback['sell'] ?? null) ? (float)$fallback['sell'] : null;
-                $buys  = $fallback['buy_orders']  ?? [];
-                $sells = $fallback['sell_orders'] ?? [];
+                $buys  = (isset($fallback['buy_orders'])  && is_array($fallback['buy_orders']))  ? $fallback['buy_orders']  : [];
+                $sells = (isset($fallback['sell_orders']) && is_array($fallback['sell_orders'])) ? $fallback['sell_orders'] : [];
                 $bbv = is_numeric($fallback['buy_volume']  ?? null) ? (int)$fallback['buy_volume']  : 0;
                 $bsv = is_numeric($fallback['sell_volume'] ?? null) ? (int)$fallback['sell_volume'] : 0;
                 if ($bbp !== null || $bsp !== null) { $partial = true; $used_stale_backup = true; }
@@ -354,8 +453,8 @@ function eve_mineral_compare_update_cache($force=false, &$refreshed=null, &$part
     }
 
     // Persist system map + chunks (atomic) + ETags
-    emc_atomic_write($map_file, json_encode($map, JSON_PARTIAL_OUTPUT_ON_ERROR));
-    eve_mineral_compare_save_cache_chunks($final);
+    emc_atomic_write_json($map_file, $map);
+    $cache_write_ok = (eve_mineral_compare_save_cache_chunks($final) === true);
     eve_mineral_compare_save_etags($etagMap);
 
     return $final;
@@ -374,18 +473,28 @@ function eve_mineral_compare_build_table_rows($minerals, $hubs, $data, $type) {
             $vals[] = $val;
         }
 
-        $ranked = $vals; arsort($ranked);
-        $top3 = array_slice(array_keys($ranked), 0, 3);
+        // Tie-aware tiers with epsilon
+        $sorted = $vals;
+        arsort($sorted);
+        $unique = [];
+        foreach ($sorted as $i => $v) {
+            if ($v === null) continue;
+            $found = false;
+            foreach ($unique as $u) {
+                if (abs($u - $v) < EVE_MINERAL_COMPARE_EPS) { $found = true; break; }
+            }
+            if (!$found) $unique[] = $v;
+        }
+        $tiers = array_slice($unique, 0, 3);
 
         $cells = [];
         foreach ($vals as $idx => $val) {
             $disp = $val === null ? 'N/A' : number_format($val, 2);
             $class = '';
-            if (in_array($idx, $top3, true)) {
-                $rank = array_search($idx, $top3, true);
-                if ($rank === 0) $class = 'emc-rank-1';
-                elseif ($rank === 1) $class = 'emc-rank-2';
-                elseif ($rank === 2) $class = 'emc-rank-3';
+            if ($val !== null) {
+                if (isset($tiers[0]) && abs($val - $tiers[0]) < EVE_MINERAL_COMPARE_EPS) $class = 'emc-rank-1';
+                elseif (isset($tiers[1]) && abs($val - $tiers[1]) < EVE_MINERAL_COMPARE_EPS) $class = 'emc-rank-2';
+                elseif (isset($tiers[2]) && abs($val - $tiers[2]) < EVE_MINERAL_COMPARE_EPS) $class = 'emc-rank-3';
             }
             $cells[] = ['value' => $disp, 'class' => $class];
         }
@@ -394,18 +503,18 @@ function eve_mineral_compare_build_table_rows($minerals, $hubs, $data, $type) {
     return $rows;
 }
 
-/** Build localized data strictly from fresh cache (no network). */
-function eve_mineral_compare_prepare_best_trade_data() {
+/** Build localized data from cache; prefer fresh, fall back to stale. */
+function eve_mineral_compare_prepare_best_trade_data(&$used_stale = false) {
     $minerals = eve_mineral_compare_get_minerals();
-    $hubs = eve_mineral_compare_get_hubs();
-    $data = eve_mineral_compare_load_cache_chunks(); // fresh only
+    $hubs     = eve_mineral_compare_get_hubs();
+    $data     = eve_mineral_compare_load_cache_fresh_or_stale($used_stale);
 
     $out = [];
     foreach ($minerals as $tid => $name) {
         $out[$tid] = ['name' => $name, 'hubs' => []];
         foreach ($hubs as $hub) {
             $hn = $hub['name'];
-            $e = $data[$tid][$hn] ?? [];
+            $e  = $data[$tid][$hn] ?? [];
             $out[$tid]['hubs'][$hn] = [
                 'buy'         => is_numeric($e['buy']  ?? null) ? (float)$e['buy']  : 'N/A',
                 'sell'        => is_numeric($e['sell'] ?? null) ? (float)$e['sell'] : 'N/A',
@@ -422,7 +531,8 @@ function eve_mineral_compare_prepare_best_trade_data() {
 function eve_mineral_compare_render_tables() {
     $minerals = eve_mineral_compare_get_minerals();
     $hubs     = eve_mineral_compare_get_hubs();
-    $cache    = eve_mineral_compare_load_cache_chunks();
+    $used_stale = false;
+    $cache    = eve_mineral_compare_load_cache_fresh_or_stale($used_stale);
     $buy_rows  = eve_mineral_compare_build_table_rows($minerals, $hubs, $cache, 'buy');
     $sell_rows = eve_mineral_compare_build_table_rows($minerals, $hubs, $cache, 'sell');
 
@@ -431,6 +541,7 @@ function eve_mineral_compare_render_tables() {
     return ob_get_clean();
 }
 
+/** Enqueue & localize (REST) */
 add_action('wp_enqueue_scripts', function() {
     if (is_admin()) return;
 
@@ -441,6 +552,7 @@ add_action('wp_enqueue_scripts', function() {
         EVE_MINERAL_COMPARE_VERSION
     );
 
+    // wp-api is registered by core; used for REST nonce transport header
     wp_enqueue_script(
         'eve-mineral-compare-js',
         plugins_url('script.js', __FILE__),
@@ -449,11 +561,15 @@ add_action('wp_enqueue_scripts', function() {
         true
     );
 
-    // Localize strictly from cache (no fetch)
+    // Localize from cache (fresh if possible; stale as fallback — no network)
+    $__used_stale_on_load = false;
+    $__extended = eve_mineral_compare_prepare_best_trade_data($__used_stale_on_load);
     wp_localize_script('eve-mineral-compare-js', 'eveMineralCompare', [
-        'ajaxurl' => admin_url('admin-ajax.php'),
-        'nonce'   => wp_create_nonce('eve_mineral_compare_refresh'),
-        'extendedTradesData' => eve_mineral_compare_prepare_best_trade_data(),
+        'rest' => [
+            'refreshUrl' => esc_url_raw( rest_url('emc/v1/refresh') ),
+        ],
+        'extendedTradesData' => $__extended,
+        'usedStaleOnLoad'    => $__used_stale_on_load ? true : false,
     ]);
 });
 
@@ -462,59 +578,100 @@ add_shortcode('eve_mineral_compare', function() {
     return eve_mineral_compare_render_tables();
 });
 
-add_action('wp_ajax_eve_mineral_compare_refresh','eve_mineral_compare_refresh_callback');
-add_action('wp_ajax_nopriv_eve_mineral_compare_refresh','eve_mineral_compare_refresh_callback');
-
-function eve_mineral_compare_refresh_callback() {
-    // AJAX headers that discourage indexing
-    header('X-Robots-Tag: noindex, nofollow', true);
-
-    check_ajax_referer('eve_mineral_compare_refresh','nonce');
-
-    // Per-IP throttle
+function emc_client_key() {
+    if (is_user_logged_in()) {
+        return 'user_' . get_current_user_id();
+    }
     $ip = $_SERVER['REMOTE_ADDR'] ?? '';
-    $transient_key = 'emc_refresh_lock_' . md5($ip);
-    if (get_transient($transient_key)) {
-        wp_send_json_error(['message' => 'Please wait before refreshing again.'], 429);
-    }
-    set_transient($transient_key, true, 20);
-
-    // Global lock to prevent stampede
-    $global_lock = 'emc_refresh_lock_global';
-    $busy = false;
-
-    $used_cache = false;
-    $refreshed  = false;
-    $partial    = false;
-    $used_stale_backup = false;
-
-    if (get_transient($global_lock)) {
-        // Another request is refreshing right now; reuse current cache
-        $busy = true;
-        $used_cache = true;
-    } else {
-        if (eve_mineral_compare_cache_is_fresh()) {
-            $used_cache = true;
-        } else {
-            set_transient($global_lock, true, 90); // keep short; just enough to avoid dogpile
-            eve_mineral_compare_update_cache(true, $refreshed, $partial, $used_stale_backup);
-            delete_transient($global_lock);
-        }
-    }
-
-    $full_html = eve_mineral_compare_render_tables();
-
-    $first_chunk = eve_mineral_compare_cache_prefix()."_1.json";
-    $cache_age_seconds = (file_exists($first_chunk)) ? max(0, time() - filemtime($first_chunk)) : null;
-
-    wp_send_json_success([
-        'html' => $full_html,
-        'extendedTradesData' => eve_mineral_compare_prepare_best_trade_data(),
-        'refreshed'  => $refreshed,
-        'used_cache' => $used_cache,
-        'busy'       => $busy,
-        'partial'    => $partial,
-        'used_stale_backup' => $used_stale_backup,
-        'cache_age_seconds' => $cache_age_seconds,
-    ]);
+    return 'ip_' . md5($ip);
 }
+
+/** REST endpoints (replace admin-ajax) */
+add_action('rest_api_init', function () {
+    register_rest_route('emc/v1', '/refresh', [
+        'methods'  => 'POST',
+        'permission_callback' => '__return_true',
+        'callback' => function (\WP_REST_Request $req) {
+            // Per-IP throttle
+            $key = emc_client_key();
+            $transient_key = 'emc_refresh_lock_' . $key;
+            if (get_transient($transient_key)) {
+                return new \WP_REST_Response(['error'=>'Please wait before refreshing again.'], 429);
+            }
+            set_transient($transient_key, true, 20);
+
+            // Global lock to prevent stampede
+            $global_lock = 'emc_refresh_lock_global';
+            $busy = false;
+            $used_cache = false;
+            $refreshed  = false;
+            $partial    = false;
+            $used_stale_backup = false;
+            $write_ok = true;
+
+            if (get_transient($global_lock)) {
+                // Another request is refreshing right now; reuse current cache
+                $busy = true;
+                $used_cache = true;
+            } else {
+                if (eve_mineral_compare_cache_is_fresh()) {
+                    $used_cache = true;
+                } else {
+                    set_transient($global_lock, true, 90); // keep short; just enough to avoid dogpile
+                    eve_mineral_compare_update_cache(true, $refreshed, $partial, $used_stale_backup, $write_ok);
+                    delete_transient($global_lock);
+                }
+            }
+
+            $full_html = eve_mineral_compare_render_tables();
+
+            $first_chunk = eve_mineral_compare_cache_prefix()."_1.json";
+            $cache_age_seconds = (file_exists($first_chunk)) ? max(0, time() - filemtime($first_chunk)) : null;
+
+            return new \WP_REST_Response([
+                'html' => $full_html,
+                'extendedTradesData' => eve_mineral_compare_prepare_best_trade_data(),
+                'refreshed'  => $refreshed,
+                'used_cache' => $used_cache,
+                'busy'       => $busy,
+                'partial'    => $partial,
+                'used_stale_backup' => $used_stale_backup,
+                'cache_age_seconds' => $cache_age_seconds,
+                'cache_write_ok'    => $write_ok,
+            ], 200);
+        }
+    ]);
+
+    register_rest_route('emc/v1', '/trades', [
+        'methods'  => 'GET',
+        'permission_callback' => '__return_true',
+        'callback' => function () {
+            $first_chunk = eve_mineral_compare_cache_prefix()."_1.json";
+            $cache_age_seconds = (file_exists($first_chunk)) ? max(0, time() - filemtime($first_chunk)) : null;
+            return new \WP_REST_Response([
+                'extendedTradesData' => eve_mineral_compare_prepare_best_trade_data(),
+                'cache_age_seconds' => $cache_age_seconds,
+            ], 200);
+        }
+    ]);
+});
+
+function emc_check_cache_dir_ok() {
+    $dir = eve_mineral_compare_cache_dir();
+    $ok = is_dir($dir) && is_writable($dir);
+    if (!$ok) {
+        add_action('admin_notices', function(){
+            echo '<div class="notice notice-error"><p><strong>EVE Mineral Compare:</strong> Cache folder is not writable. Prices may not persist. Check file permissions for <code>wp-content/uploads/eve-mineral-compare/cache/</code>.</p></div>';
+        });
+    }
+}
+add_action('admin_init', 'emc_check_cache_dir_ok');
+
+add_filter('rest_pre_serve_request', function($served, $result, $request, $server){
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0', true);
+    header('Pragma: no-cache', true);
+    header('X-Content-Type-Options: nosniff', true);
+    header('X-Robots-Tag: noindex, nofollow', true);
+    return $served;
+}, 10, 4);
+
