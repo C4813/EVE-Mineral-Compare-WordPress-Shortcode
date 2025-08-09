@@ -132,10 +132,11 @@
     <?php endforeach; ?>
 
     <div id="emc-limit-60k-container" class="emc-limit">
-      <label>
-        <span>Limit to 60km<sup>3</sup></span>
+      <label class="emc-limit-label">
         <input type="checkbox" id="emc-limit-60k">
+        <span>Limit to 6,000,000 units (~60,000 m³)</span>
       </label>
+      <div class="emc-limit-note">Buy from Buy, Sell to Sell defaults to 100,000 units</div>
     </div>
   </div>
 
