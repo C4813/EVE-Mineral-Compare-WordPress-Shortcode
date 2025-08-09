@@ -2,11 +2,11 @@
 /*
 Plugin Name: EVE Mineral Compare
 Description: Shows best buy/sell prices for EVE minerals at major trade hubs, with AJAX refresh and caching. Adds extended trade simulation table.
-Version: 2.0
+Version: 2.1
 Author: Your Name
 */
 
-define('EVE_MINERAL_COMPARE_VERSION', '2.0');
+define('EVE_MINERAL_COMPARE_VERSION', '2.1');
 define('EVE_MINERAL_COMPARE_CACHE_AGE', 6 * 3600);
 define('EVE_MINERAL_COMPARE_MAX_ORDERS_PER_SIDE', 150);
 define('EVE_MINERAL_COMPARE_MAX_PAGES', 5);
@@ -60,7 +60,34 @@ function eve_mineral_compare_system_map_file() {
     return eve_mineral_compare_cache_dir() . 'system_map.json';
 }
 
-/** HTTP GET with small retry/backoff */
+/** Page cache + ETag helpers (for ESI market pages) */
+function eve_mineral_compare_page_cache_dir() {
+    $dir = trailingslashit(eve_mineral_compare_cache_dir()) . 'pages/';
+    if (!is_dir($dir)) wp_mkdir_p($dir);
+    return $dir;
+}
+function eve_mineral_compare_etag_file() {
+    return trailingslashit(eve_mineral_compare_cache_dir()) . 'etags.json';
+}
+function eve_mineral_compare_load_etags() {
+    $f = eve_mineral_compare_etag_file();
+    $m = is_file($f) ? json_decode(@file_get_contents($f), true) : [];
+    return is_array($m) ? $m : [];
+}
+function eve_mineral_compare_save_etags(array $m) {
+    emc_atomic_write(eve_mineral_compare_etag_file(), json_encode($m, JSON_PARTIAL_OUTPUT_ON_ERROR));
+}
+function eve_mineral_compare_page_key($region, $tid, $page) {
+    return "{$region}_{$tid}_{$page}";
+}
+function eve_mineral_compare_page_path($region, $tid, $page) {
+    return eve_mineral_compare_page_cache_dir() . 'orders_' . eve_mineral_compare_page_key($region, $tid, $page) . '.json';
+}
+
+/**
+ * HTTP GET with small retry/backoff.
+ * Also reads ESI error-limit headers to gently back off when close to limits.
+ */
 function eve_mc_http_get($url, $timeout=20, $retries=2) {
     $args = [
         'timeout' => $timeout,
@@ -69,13 +96,76 @@ function eve_mc_http_get($url, $timeout=20, $retries=2) {
     $delay = 0.3;
     for ($i=0; $i <= $retries; $i++) {
         $resp = wp_remote_get($url, $args);
-        if (!is_wp_error($resp) && wp_remote_retrieve_response_code($resp) === 200) {
-            return $resp;
+        if (!is_wp_error($resp)) {
+            $code = wp_remote_retrieve_response_code($resp);
+            if ($code === 200) {
+                return $resp;
+            }
+            // Gentle, generic backoff if ESI error limit is low
+            $remain = (int) wp_remote_retrieve_header($resp, 'x-esi-error-limit-remain');
+            $reset  = (int) wp_remote_retrieve_header($resp, 'x-esi-error-limit-reset');
+            if ($remain !== 0 && $remain <= 2 && $reset > 0) {
+                usleep(min(1500000, $reset * 300000)); // 0.3s per sec left, max ~1.5s
+            }
         }
         usleep((int)($delay * 1e6));
         $delay *= 2;
     }
     return $resp; // return last response (could be WP_Error)
+}
+
+/**
+ * Fetch a market page with If-None-Match and local page cache.
+ * Returns array|null (decoded JSON) and updates $etagMap by reference.
+ */
+function eve_mineral_compare_fetch_market_page($region, $tid, $page, array &$etagMap) {
+    $key  = eve_mineral_compare_page_key($region, $tid, $page);
+    $path = eve_mineral_compare_page_path($region, $tid, $page);
+    $etag = $etagMap[$key] ?? null;
+
+    $url = "https://esi.evetech.net/latest/markets/{$region}/orders/?datasource=tranquility&order_type=all&type_id={$tid}&page={$page}";
+    $args = [
+        'timeout' => 20,
+        'headers' => ['User-Agent' => 'EVE Mineral Compare v' . EVE_MINERAL_COMPARE_VERSION],
+    ];
+    if ($etag) $args['headers']['If-None-Match'] = $etag;
+
+    $resp = wp_remote_get($url, $args);
+    if (is_wp_error($resp)) return null;
+
+    // Gentle rate-limit backoff near edge
+    $remain = (int) wp_remote_retrieve_header($resp, 'x-esi-error-limit-remain');
+    $reset  = (int) wp_remote_retrieve_header($resp, 'x-esi-error-limit-reset');
+    if ($remain !== 0 && $remain <= 2 && $reset > 0) {
+        usleep(min(1500000, $reset * 300000)); // ~0.3s per sec left, capped
+    }
+
+    $code = wp_remote_retrieve_response_code($resp);
+
+    if ($code === 304) {
+        if (file_exists($path)) {
+            $json = json_decode(@file_get_contents($path), true);
+            return is_array($json) ? $json : null;
+        }
+        // 304 but we don't have a cached body → one-time unconditional refetch
+        unset($args['headers']['If-None-Match']);
+        $resp = wp_remote_get($url, $args);
+        if (is_wp_error($resp)) return null;
+        $code = wp_remote_retrieve_response_code($resp);
+    }
+
+    if ($code === 200) {
+        $body = wp_remote_retrieve_body($resp);
+        $json = json_decode($body, true);
+        if (is_array($json)) {
+            $newEtag = wp_remote_retrieve_header($resp, 'etag');
+            if ($newEtag) $etagMap[$key] = $newEtag;
+            emc_atomic_write($path, $body);
+            return $json;
+        }
+    }
+
+    return null;
 }
 
 /** Load only fresh chunks (<=6h) */
@@ -112,29 +202,53 @@ function eve_mineral_compare_load_all_cache_chunks() {
 }
 
 function eve_mineral_compare_save_cache_chunks(array $data) {
-    // clear old files
+    // Ensure cache dir guard exists (Nginx-safe). No-op if already there.
+    $cacheDir = eve_mineral_compare_cache_dir();
+    $indexPhp = $cacheDir . 'index.php';
+    if (!file_exists($indexPhp)) {
+        @file_put_contents($indexPhp, "<?php http_response_code(404); exit;", LOCK_EX);
+    }
+
+    // Two-phase write: write to tmp prefix, then swap.
+    $prefix    = eve_mineral_compare_cache_prefix();
+    $tmpPrefix = $prefix . '_new';
+
+    // Clean stale tmp
     for ($i=1; $i<=99; $i++) {
-        $f = eve_mineral_compare_cache_prefix()."_{$i}.json";
+        $f = "{$tmpPrefix}_{$i}.json";
         if (file_exists($f)) @unlink($f);
     }
-    $chunks = array_chunk(array_keys($data), 8);
+
+    // Write new chunks to tmp
+    $keys   = array_keys($data);
+    $chunks = array_chunk($keys, 8);
     foreach ($chunks as $i => $set) {
         $out = [];
         foreach ($set as $tid) $out[$tid] = $data[$tid];
-        $path = eve_mineral_compare_cache_prefix().'_'.($i+1).'.json';
+        $path = "{$tmpPrefix}_".($i+1).'.json';
         if (!emc_atomic_write($path, json_encode($out, JSON_PARTIAL_OUTPUT_ON_ERROR))) {
-            error_log('EVE Mineral Compare: failed to write cache chunk ' . ($i+1));
+            error_log('EVE Mineral Compare: failed to write tmp cache chunk ' . ($i+1));
+            return; // abort swap; keep old cache
         }
+    }
+
+    // Remove old live files, then rename tmp → live
+    for ($i=1; $i<=99; $i++) {
+        $old = "{$prefix}_{$i}.json";
+        if (file_exists($old)) @unlink($old);
+    }
+    for ($i=1; $i<=count($chunks); $i++) {
+        @rename("{$tmpPrefix}_{$i}.json", "{$prefix}_{$i}.json");
     }
 }
 
 function eve_mineral_compare_resolve_system_id($loc_id, &$map, $primary, $secondary, $scope) {
     if (isset($map[$loc_id])) return $map[$loc_id];
-    if ($loc_id >= 1000000000000) { // citadel heuristic
+    if ($loc_id >= 1000000000000) { // citadel heuristic (kept as-is)
         $map[$loc_id] = ($scope === 'secondary') ? $secondary : $primary;
         return $map[$loc_id];
     }
-    $resp = eve_mc_http_get("https://esi.evetech.net/latest/universe/stations/{$loc_id}/");
+    $resp = eve_mc_http_get("https://esi.evetech.net/latest/universe/stations/{$loc_id}/?datasource=tranquility");
     if (is_wp_error($resp)) { $map[$loc_id] = null; return null; }
     $body = json_decode(wp_remote_retrieve_body($resp), true);
     $map[$loc_id] = $body['system_id'] ?? null;
@@ -149,6 +263,7 @@ function eve_mineral_compare_cache_is_fresh() {
 
 /**
  * Update cache. If ESI is flaky, fallback to stale cache per entry (partial refresh).
+ * Uses ETag-based page cache for market pages.
  * @return array Final dataset
  */
 function eve_mineral_compare_update_cache($force=false, &$refreshed=null, &$partial=false, &$used_stale_backup=false) {
@@ -157,6 +272,8 @@ function eve_mineral_compare_update_cache($force=false, &$refreshed=null, &$part
     $map_file = eve_mineral_compare_system_map_file();
     $map      = is_file($map_file) ? json_decode(@file_get_contents($map_file), true) : [];
     if (!is_array($map)) $map = [];
+
+    $etagMap  = eve_mineral_compare_load_etags();
 
     $need_refresh = $force || !eve_mineral_compare_cache_is_fresh();
     if (!$need_refresh) { $refreshed=false; $partial=false; $used_stale_backup=false; return eve_mineral_compare_load_cache_chunks(); }
@@ -174,12 +291,10 @@ function eve_mineral_compare_update_cache($force=false, &$refreshed=null, &$part
         $secondary = $hub['systems'][1] ?? null;
 
         foreach ($minerals as $tid => $mname) {
-            $buys=[]; $sells=[]; $page=1; $pages=1;
+            $buys=[]; $sells=[]; $page=1;
 
             do {
-                $resp = eve_mc_http_get("https://esi.evetech.net/latest/markets/{$region}/orders/?order_type=all&type_id={$tid}&page={$page}");
-                if (is_wp_error($resp)) break;
-                $arr = json_decode(wp_remote_retrieve_body($resp), true);
+                $arr = eve_mineral_compare_fetch_market_page($region, $tid, $page, $etagMap);
                 if (!is_array($arr)) break;
 
                 foreach ($arr as $o) {
@@ -199,9 +314,8 @@ function eve_mineral_compare_update_cache($force=false, &$refreshed=null, &$part
                     }
                 }
 
-                $pages = intval(wp_remote_retrieve_header($resp,'x-pages')) ?: 1;
                 $page++;
-            } while ($page <= min($pages, EVE_MINERAL_COMPARE_MAX_PAGES));
+            } while ($page <= EVE_MINERAL_COMPARE_MAX_PAGES);
 
             // Sort best-first
             usort($buys,  fn($a,$b)=> $b['price'] <=> $a['price']);
@@ -239,9 +353,10 @@ function eve_mineral_compare_update_cache($force=false, &$refreshed=null, &$part
         }
     }
 
-    // Persist system map + chunks (atomic)
+    // Persist system map + chunks (atomic) + ETags
     emc_atomic_write($map_file, json_encode($map, JSON_PARTIAL_OUTPUT_ON_ERROR));
     eve_mineral_compare_save_cache_chunks($final);
+    eve_mineral_compare_save_etags($etagMap);
 
     return $final;
 }
