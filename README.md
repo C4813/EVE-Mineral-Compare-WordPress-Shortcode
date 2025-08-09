@@ -1,4 +1,4 @@
-## EVE Mineral Compare — Version 2.1
+## EVE Mineral Compare — Version 3.0
 
 ### Overview
 EVE Mineral Compare is a WordPress shortcode plugin that displays the best buy and sell prices for EVE Online minerals across major trade hubs when the shortcode `[eve_mineral_compare]` is inserted to a post/page.  
