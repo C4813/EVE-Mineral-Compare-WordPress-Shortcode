@@ -67,6 +67,7 @@
   <div class="emc-fees-summary-container">
     <h4>Brokerage Fee &amp; Sales Tax</h4>
     <table id="emc-fees-summary" class="emc-table-center emc-table-auto">
+      <caption class="screen-reader-text">Brokerage fee and sales tax per market hub</caption>
       <thead><tr><th>Hub</th><th>Brokerage Fee</th><th>Sales Tax</th></tr></thead>
       <tbody></tbody>
     </table>
@@ -75,6 +76,7 @@
   <!-- Buy Values Table -->
   <h3 class="emc-section-title">Buy Values</h3>
   <table id="eve-mineral-compare-table-buy" class="emc-main-table">
+    <caption class="screen-reader-text">Best buy prices per hub for EVE minerals</caption>
     <thead>
       <tr>
         <th>Mineral</th>
@@ -98,6 +100,7 @@
   <!-- Sell Values Table -->
   <h3 class="emc-section-title">Sell Values</h3>
   <table id="eve-mineral-compare-table-sell" class="emc-main-table">
+    <caption class="screen-reader-text">Best sell prices per hub for EVE minerals</caption>
     <thead>
       <tr>
         <th>Mineral</th>
@@ -124,23 +127,25 @@
   <!-- Filters + limit -->
   <div id="emc-hub-filters-best" class="emc-hub-row">
     <span class="emc-hub-label">Show Hubs:</span>
-    <?php foreach (eve_mineral_compare_get_hubs() as $hub): ?>
-      <label class="emc-hub-item">
+    <?php foreach (eve_mineral_compare_get_hubs() as $i => $hub):
+          $hid = 'emc-hub-'.sanitize_html_class($hub['name']).'-'.$i; ?>
+      <label class="emc-hub-item" for="<?php echo esc_attr($hid); ?>">
         <span class="emc-hub-name"><?php echo esc_html($hub['name']); ?></span>
-        <input type="checkbox" class="emc-hub-toggle" value="<?php echo esc_attr($hub['name']); ?>" checked>
+        <input id="<?php echo esc_attr($hid); ?>" type="checkbox" class="emc-hub-toggle" value="<?php echo esc_attr($hub['name']); ?>" checked>
       </label>
     <?php endforeach; ?>
 
     <div id="emc-limit-60k-container" class="emc-limit">
-      <label class="emc-limit-label">
+      <div class="emc-limit-label">
         <input type="checkbox" id="emc-limit-60k">
         <span>Limit to 6,000,000 units (~60,000 m³)</span>
-      </label>
+      </div>
       <div class="emc-limit-note">Buy from Buy, Sell to Sell defaults to 100,000 units</div>
     </div>
   </div>
 
   <table id="eve-mc-extended" class="emc-main-table">
+    <caption class="screen-reader-text">Extended trade opportunities with adjustable legs and margin filter</caption>
     <thead>
       <tr>
         <th>Mineral</th>
@@ -169,6 +174,27 @@
           <div class="emc-th-control">
             <input type="number" id="emc-min-margin" value="5" step="0.1">
           </div>
+        </th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <!-- No Undock Trading (Table 4) -->
+  <h3 class="emc-section-title">No-Undock Trading</h3>
+  <div class="emc-aux-note">Always Buying from Buy, Selling to Sell within the same hub</div>
+
+  <table id="emc-no-undock" class="emc-main-table">
+    <thead>
+      <tr>
+        <th>Mineral</th>
+        <?php foreach (eve_mineral_compare_get_hubs() as $hub): ?>
+          <th><?php echo esc_html($hub['name']); ?></th>
+        <?php endforeach; ?>
+      </tr>
+      <tr>
+        <th colspan="<?php echo 1 + count(eve_mineral_compare_get_hubs()); ?>" class="screen-reader-text">
+          Always Buy from Buy, Sell to Sell
         </th>
       </tr>
     </thead>
