@@ -72,10 +72,10 @@
 /* Refresh status */
 #eve-mineral-status,
 .emc-refresh-status {
-    margin-top: 5px;
-    font-size: 0.85em;
-    color: #666;
-    text-align: center;
+  margin-top: 5px;
+  font-size: 0.85em;
+  color: #666;
+  text-align: center;
 }
 
 /* ==========================
@@ -170,24 +170,34 @@
   flex-direction: row;
 }
 
+/* Limit control — stacked with helper note beneath */
 #emc-limit-60k-container {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: flex-start;
 }
-#emc-limit-60k-container label {
+#emc-limit-60k-container .emc-limit-label {
   display: flex;
+  flex-direction: row-reverse;
   align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  flex-direction: row;
+  gap: 6px;
 }
-/* Consistent superscript in the limit label */
+#emc-limit-60k-container .emc-limit-note {
+  margin-top: 2px;
+  font-size: 0.85em;
+  font-style: italic;
+  color: #666;
+}
+/* Superscript in the limit label */
 #emc-limit-60k-container sup {
   font-size: 0.75em;
   line-height: 1;
   vertical-align: baseline;
   position: relative;
   top: -0.35em;
+}
+#emc-limit-60k-container .emc-limit-note {
+    display: none;
 }
 
 /* ==========================
@@ -253,7 +263,6 @@
   padding: 4px 6px;
   white-space: nowrap;
 }
-/* Structured header label/control stack */
 #eve-mc-extended th .emc-th-label {
   font-weight: 600;
   margin-bottom: 4px;
@@ -296,6 +305,9 @@
 .emc-td-center { text-align: center !important; }
 .emc-td-right  { text-align: right  !important; }
 .emc-td-nowrap { white-space: nowrap; }
+
+/* Simple hide utility for JS toggles */
+.emc-hidden { display: none !important; }
 
 /* ==========================
    Responsive tweaks
