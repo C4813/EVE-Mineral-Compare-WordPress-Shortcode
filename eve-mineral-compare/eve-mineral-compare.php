@@ -1,12 +1,37 @@
 <?php
+// Anonymous throttle token (set early, before output)
+add_action('init', function(){
+    if (is_user_logged_in()) { return; }
+    $cookie_name = 'emc_tid';
+    if (empty($_COOKIE[$cookie_name])) {
+        try {
+            $rand = function_exists('random_bytes') ? bin2hex(random_bytes(16)) : '';
+            if (empty($rand) && function_exists('openssl_random_pseudo_bytes')) {
+                $rand = bin2hex(openssl_random_pseudo_bytes(16));
+            }
+            if (empty($rand)) {
+                $rand = md5(uniqid('', true) . microtime(true));
+            }
+        } catch (\Throwable $e) {
+            $rand = md5(uniqid('', true) . microtime(true));
+        }
+        $cookie_path   = defined('COOKIEPATH') ? COOKIEPATH : '/';
+        $cookie_domain = defined('COOKIE_DOMAIN') ? COOKIE_DOMAIN : '';
+        $secure        = function_exists('is_ssl') ? is_ssl() : (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off');
+        @setcookie($cookie_name, $rand, time()+86400, $cookie_path, $cookie_domain, $secure, true);
+        $_COOKIE[$cookie_name] = $rand;
+    }
+}, 1);
+
+
 /*
 Plugin Name: EVE Mineral Compare
 Description: Shows best buy/sell prices for EVE minerals at major trade hubs, with REST refresh and caching. Adds extended trade simulation table.
-Version: 3.1
-Author: Your Name
+Version: 4.0
+Author: C4813
 */
 
-define('EVE_MINERAL_COMPARE_VERSION', '3.1');
+define('EVE_MINERAL_COMPARE_VERSION', '4.0');
 define('EVE_MINERAL_COMPARE_CACHE_AGE', 6 * 3600);
 define('EVE_MINERAL_COMPARE_MAX_ORDERS_PER_SIDE', 150);
 define('EVE_MINERAL_COMPARE_MAX_PAGES', 5);
@@ -59,7 +84,6 @@ function emc_on_uninstall() {
     $wpdb->query("DELETE FROM {$wpdb->options} WHERE option_name LIKE '_transient_emc_refresh_lock_%' OR option_name='_transient_emc_refresh_lock_global'");
 }
 register_uninstall_hook(__FILE__, 'emc_on_uninstall');
-
 
 function emc_atomic_write_json($path, $arr) {
     $json = wp_json_encode($arr, JSON_PARTIAL_OUTPUT_ON_ERROR);
@@ -121,11 +145,11 @@ function eve_mineral_compare_cache_dir() {
         if (!file_exists($webconfig)) {
             @file_put_contents($webconfig, '<?xml version="1.0"?>
 <configuration><system.webServer>
-  <security><requestFiltering>
-    <fileExtensions>
-      <add fileExtension=".json" allowed="false" />
-    </fileExtensions>
-  </requestFiltering></security>
+  <security>
+    <authorization>
+      <deny users="*" />
+    </authorization>
+  </security>
 </system.webServer></configuration>', LOCK_EX);
         }
     }
@@ -640,39 +664,58 @@ function eve_mineral_compare_render_tables() {
 }
 
 /** Enqueue & localize (REST) */
-add_action('wp_enqueue_scripts', function() {
-    if (is_admin()) return;
+add_action('wp_enqueue_scripts', function () {
+    if (is_admin()) {
+        return;
+    }
+
+    // File locations (plugin root)
+    $style_rel  = 'style.css';
+    $script_rel = 'script.js';
+
+    $style_path  = plugin_dir_path(__FILE__) . $style_rel;
+    $script_path = plugin_dir_path(__FILE__) . $script_rel;
+
+    $style_url  = plugin_dir_url(__FILE__) . $style_rel;
+    $script_url = plugin_dir_url(__FILE__) . $script_rel;
+
+    // Bust cache with filemtime if available
+    $style_ver  = file_exists($style_path)  ? (string) filemtime($style_path)  : EVE_MINERAL_COMPARE_VERSION;
+    $script_ver = file_exists($script_path) ? (string) filemtime($script_path) : EVE_MINERAL_COMPARE_VERSION;
 
     wp_enqueue_style(
         'eve-mineral-compare-style',
-        plugins_url('style.css', __FILE__),
+        $style_url,
         [],
-        EVE_MINERAL_COMPARE_VERSION
+        $style_ver
     );
 
-    // wp-api is registered by core; used for REST nonce transport header
     wp_enqueue_script(
         'eve-mineral-compare-js',
-        plugins_url('script.js', __FILE__),
+        $script_url,
         ['jquery'],
-        EVE_MINERAL_COMPARE_VERSION,
+        $script_ver,
         true
     );
 
-    // Localize from cache (fresh if possible; stale as fallback — no network)
+    // Prepare initial trade data from cache (fresh or stale)
     $__used_stale_on_load = false;
     $__extended = eve_mineral_compare_prepare_best_trade_data($__used_stale_on_load);
+
+    // Only allow clearCacheUrl for admins
+    $is_admin_capable = current_user_can('manage_options');
+
     wp_localize_script('eve-mineral-compare-js', 'eveMineralCompare', [
-        'rest' => [
-            'refreshUrl' => esc_url_raw(rest_url('emc/v1/refresh')),
-            'tradesUrl'  => esc_url_raw(rest_url('emc/v1/trades')),
-            'nonce'      => wp_create_nonce('wp_rest'),
-            'snapshotUrl'=> esc_url_raw(rest_url('emc/v1/snapshot')),
-            'clearCacheUrl'=> esc_url_raw(rest_url('emc/v1/clear-cache')),
+        'isAdmin' => (bool) $is_admin_capable,
+        'rest'    => [
+            'nonce'         => wp_create_nonce('wp_rest'),
+            'refreshUrl'    => esc_url_raw(rest_url('emc/v1/refresh')),
+            'tradesUrl'     => esc_url_raw(rest_url('emc/v1/trades')),
+            'snapshotUrl'   => esc_url_raw(rest_url('emc/v1/snapshot')),
+            'clearCacheUrl' => $is_admin_capable ? esc_url_raw(rest_url('emc/v1/clear-cache')) : '',
         ],
         'extendedTradesData' => $__extended,
-        'usedStaleOnLoad'    => $__used_stale_on_load ? true : false,
-        'isAdmin'            => current_user_can('manage_options'),
+        'usedStaleOnLoad'    => $__used_stale_on_load,
     ]);
 });
 
@@ -683,8 +726,19 @@ add_shortcode('eve_mineral_compare', function() {
 
 function emc_client_key() {
     if (is_user_logged_in()) {
+        if (function_exists('wp_get_session_token')) {
+            $tok = wp_get_session_token();
+            if (!empty($tok)) {
+                return 'sess_' . substr(md5($tok), 0, 16);
+            }
+        }
         return 'user_' . get_current_user_id();
     }
+    $tid = isset($_COOKIE['emc_tid']) ? $_COOKIE['emc_tid'] : '';
+    if (!empty($tid)) {
+        return 'anon_' . substr(md5($tid), 0, 16);
+    }
+    // Fallback (behind proxies this may be less distinct, but it avoids breaking)
     $ip = $_SERVER['REMOTE_ADDR'] ?? '';
     $ua = $_SERVER['HTTP_USER_AGENT'] ?? '';
     return 'anon_' . md5($ip . '|' . $ua);
@@ -732,7 +786,12 @@ add_action('rest_api_init', function () {
             }
             
             // Cache is stale → schedule a refresh once (avoid duplicate scheduling)
-            if (!wp_next_scheduled('emc_do_refresh')) {
+                        // Global lock to avoid multiple concurrent refreshes
+            if (get_transient('emc_refresh_lock_global')) {
+                return new \WP_REST_Response(['error'=>'Refresh already in progress.'], 429, ['Retry-After' => 60]);
+            }
+            set_transient('emc_refresh_lock_global', true, 90);
+if (!wp_next_scheduled('emc_do_refresh')) {
                 wp_schedule_single_event(time() + 5, 'emc_do_refresh');
             }
             
@@ -787,6 +846,8 @@ add_action('rest_api_init', function () {
         'permission_callback' => function () {
             return current_user_can('manage_options');
         },
+        // Require REST nonce as well
+        'permission_callback' => function (\WP_REST_Request $req) { $nonce = $req->get_header('X-WP-Nonce'); return current_user_can('manage_options') && wp_verify_nonce($nonce, 'wp_rest'); },
         'callback' => function () {
             $dir = eve_mineral_compare_cache_dir();
     
@@ -831,6 +892,7 @@ add_filter('rest_pre_serve_request', function($served, $result, $request, $serve
     header('Pragma: no-cache', true);
     header('X-Content-Type-Options: nosniff', true);
     header('X-Robots-Tag: noindex, nofollow', true);
+    header('X-Frame-Options: SAMEORIGIN', true);
+    header('Referrer-Policy: no-referrer', true);
     return $served;
 }, 10, 4);
-
