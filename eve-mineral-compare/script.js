@@ -1,12 +1,17 @@
 /* global jQuery, eveMineralCompare */
 jQuery(function ($) {
+  'use strict';
+
   var ASSUMED_UNITS = 100000;      // pseudo cap for single-price legs
   var emcRefreshXhr = null;        // tracks the current REST request
-  var COOLDOWN_SEC = 20;           // forced 20s cooldown animation
+  var COOLDOWN_SEC  = 20;          // forced 20s cooldown animation
   var LS_NEXT_REFRESH_AT = 'emcNextRefreshAt';
   var LS_BUY_FROM  = 'emcBuyFrom';
   var LS_SELL_TO   = 'emcSellTo';
   var LS_STANDINGS = 'emcStandings';
+
+  // Polling timer handle so we can cancel on unload
+  var emcPollTimer = null;
 
   // ---------- utils ----------
   function formatNumber(val) {
@@ -26,6 +31,38 @@ jQuery(function ($) {
       clearTimeout(t);
       t = setTimeout(function(){ fn.apply(ctx, args); }, delay);
     };
+  }
+
+  // Cache-buster for GET requests (defense vs stale caches/proxies)
+  function addCacheBuster(url) {
+    if (!url || typeof url !== 'string') return url;
+    var sep = url.indexOf('?') === -1 ? '?' : '&';
+    return url + sep + '_ts=' + Date.now();
+  }
+
+  function prettyAge(sec) {
+    if (!Number.isFinite(sec) || sec < 0) return 'unknown';
+    var h = Math.floor(sec / 3600);
+    var m = Math.floor((sec % 3600) / 60);
+    if (h > 0) return h + ' hour' + (h === 1 ? '' : 's') + ' ' + m + ' minute' + (m === 1 ? '' : 's');
+    return m + ' minute' + (m === 1 ? '' : 's');
+  }
+
+  // Data is "ready" only if at least one hub has a finite buy or sell
+  function isDataReady(data) {
+    if (!data || typeof data !== 'object') return false;
+    for (var tid in data) {
+      if (!Object.prototype.hasOwnProperty.call(data, tid)) continue;
+      var m = data[tid];
+      if (!m || !m.hubs) continue;
+      for (var hub in m.hubs) {
+        if (!Object.prototype.hasOwnProperty.call(m.hubs, hub)) continue;
+        var h = m.hubs[hub];
+        if (!h) continue;
+        if (Number.isFinite(h.buy) || Number.isFinite(h.sell)) return true;
+      }
+    }
+    return false;
   }
 
   // ---------- standings & fee math ----------
@@ -115,12 +152,10 @@ jQuery(function ($) {
   }
 
   // ---------- trade simulation ----------
-  // Applies rules:
-  // BUY from buy: brokerage ADDED; price uses min(highest buys across hubs)  → synthetic
-  // BUY from sell: no fee;      price uses min(lowest sells across hubs)     → ladder
-  // SELL to buy:   tax only;    price uses max(highest buys across hubs)     → ladder
-  // SELL to sell:  tax + broker;price uses max(highest sells across hubs)    → synthetic
-  // Uses full orderbook ladders for any leg set to match live orders (buy from sell / sell to buy)
+  // BUY from buy:  brokerage ADDED; use min(highest buys across hubs)  → synthetic
+  // BUY from sell: no fee;           use min(lowest sells across hubs)  → ladder
+  // SELL to buy:   tax only;         use max(highest buys across hubs)  → ladder
+  // SELL to sell:  tax + broker;     use max(highest sells across hubs) → synthetic
   function simulateDepthAcrossOrders(mineral, buyType, sellType, qtyLimit, allowedHubs, brokerageFees, salesTaxRates, minMarginPct) {
     if (!mineral || !mineral.hubs) return null;
 
@@ -129,21 +164,21 @@ jQuery(function ($) {
 
     // BUYING hub/price pick
     var buyBest = (buyType === 'buy')
-      ? pickHub(mineral, 'buy',  'min', allowedHubs)   // creating a buy order (synthetic)
-      : pickHub(mineral, 'sell', 'min', allowedHubs);  // instant buy (fulfilling sell ladder)
+      ? pickHub(mineral, 'buy',  'min', allowedHubs)
+      : pickHub(mineral, 'sell', 'min', allowedHubs);
 
     // SELLING hub/price pick
     var sellBest = (sellType === 'buy')
-      ? pickHub(mineral, 'buy',  'max', allowedHubs)   // instant sell (fulfilling buy ladder)
-      : pickHub(mineral, 'sell', 'max', allowedHubs);  // creating a sell order (synthetic)
+      ? pickHub(mineral, 'buy',  'max', allowedHubs)
+      : pickHub(mineral, 'sell', 'max', allowedHubs);
 
     if (!buyBest || !sellBest) return null;
 
     var buyHub  = buyBest.hub;
     var sellHub = sellBest.hub;
 
-    var buyUsesLadder  = (buyType  === 'sell'); // buying FROM sell orders -> ladder
-    var sellUsesLadder = (sellType === 'buy');  // selling INTO buy orders -> ladder
+    var buyUsesLadder  = (buyType  === 'sell');
+    var sellUsesLadder = (sellType === 'buy');
     var anyLadder = buyUsesLadder || sellUsesLadder;
 
     // Raw ladders (only when laddering on that side)
@@ -168,10 +203,7 @@ jQuery(function ($) {
     // User-set quantity limit (distinct from min margin)
     var userQtyLimit = (qtyLimit != null && Number.isFinite(Number(qtyLimit)) && Number(qtyLimit) > 0) ? Number(qtyLimit) : null;
 
-    // Quantity ceiling:
-    // - If userQtyLimit: min(limit, ladder depth) when ladder is used; else min(limit, MAX_QTY_CAP)
-    // - If no userQtyLimit and any ladder: ladder depth (>0)
-    // - If no ladders: ASSUMED_UNITS (guarded by MAX_QTY_CAP)
+    // Quantity ceiling
     var qtyCeiling;
     if (userQtyLimit != null) {
       if (anyLadder) {
@@ -190,7 +222,7 @@ jQuery(function ($) {
         sellUsesLadder ? ladderAvailSell : Infinity
       );
       if (!Number.isFinite(ladderBound) || ladderBound <= 0) return null;
-      qtyCeiling = ladderBound; // no MAX_QTY_CAP when a ladder is involved
+      qtyCeiling = ladderBound;
     } else {
       qtyCeiling = Math.min(ASSUMED_UNITS, MAX_QTY_CAP);
     }
@@ -207,7 +239,7 @@ jQuery(function ($) {
       sellOrders = [{ price: sp, vol: qtyCeiling }];
     }
 
-    // Final max units; only guard with MAX_QTY_CAP when NO ladder is used
+    // Final max units
     var maxUnits = qtyCeiling;
     if (!Number.isFinite(maxUnits) || maxUnits <= 0) maxUnits = ASSUMED_UNITS;
     if (!anyLadder && maxUnits > MAX_QTY_CAP) maxUnits = MAX_QTY_CAP;
@@ -241,7 +273,7 @@ jQuery(function ($) {
       var newRev  = totalRevenue + stepRev;
 
       if (!Number.isFinite(newCost) || !Number.isFinite(newRev)) break;
-      if (newCost > MAX_SAFE_TOTAL || newRev > MAX_SAFE_TOTAL) break;
+      if (newCost > 1e15 || newRev > 1e15) break;
 
       var stepMargin = newCost > 0 ? ((newRev - newCost) / newCost) * 100 : 0;
       if (stepMargin < minMargin) break;
@@ -318,10 +350,11 @@ jQuery(function ($) {
 
     var buyType  = $('#buy-from-select-ext').val()  || 'buy';
     var sellType = $('#sell-to-select-ext').val()   || 'sell';
+
     // show note only when both legs are synthetic (no ladder)
     var showDefaultNote = (buyType === 'buy' && sellType === 'sell');
-    $('#emc-limit-60k-container .emc-limit-note')
-        .toggleClass('is-visible', showDefaultNote);
+    $('#emc-limit-60k-container .emc-limit-note').toggleClass('is-visible', showDefaultNote);
+
     var allowed  = getAllowedHubsExtended();
     var fees     = getBrokerageAndTaxForHub();
     var taxes    = getSalesTaxForHub();
@@ -332,7 +365,6 @@ jQuery(function ($) {
     var $tbody = $('#eve-mc-extended tbody').empty();
     var margins = [], rows = 0;
 
-    // data is an object keyed by type_id
     jQuery.each(data, function (id, m) {
       if (!m || !m.hubs || !allowed.length) return;
       var sim = simulateDepthAcrossOrders(m, buyType, sellType, qtyLimit, allowed, fees, taxes, minMargin);
@@ -377,161 +409,185 @@ jQuery(function ($) {
       });
     } catch(e){}
   }
-  
-    // ---------- no-undock trading (Table 4) ----------
-    function colorForMargin(margin, minAll, maxAll) {
-      // Non-finite → muted gray
-      if (!isFinite(margin)) return '#555';
-    
-      // If everything is the same, pick a neutral greenish
-      if (maxAll === minAll) return margin >= 0 ? '#1b5e20' : '#b00020';
-    
-      if (margin <= 0) {
-        // Scale reds from 0% (light) to minAll (deep red)
-        var tR = (minAll < 0) ? Math.min(1, Math.max(0, (0 - margin) / (0 - minAll))) : 1;
-        var lR = 55 - 20 * tR; // lightness 55% → 35%
-        return 'hsl(0, 80%,' + lR + '%)'; // red hues
-      } else {
-        // Scale greens from small positive → maxAll (deep green)
-        var tG = (maxAll > 0) ? Math.min(1, Math.max(0, margin / maxAll)) : 0;
-        var lG = 50 - 25 * tG; // lightness 50% → 25%
-        return 'hsl(145, 60%,' + lG + '%)'; // green hues
-      }
+
+  // ---------- no-undock trading (Table 4) ----------
+  function colorForMargin(margin, minAll, maxAll) {
+    if (!isFinite(margin)) return '#555';
+    if (maxAll === minAll) return margin >= 0 ? '#1b5e20' : '#b00020';
+    if (margin <= 0) {
+      var tR = (minAll < 0) ? Math.min(1, Math.max(0, (0 - margin) / (0 - minAll))) : 1;
+      var lR = 55 - 20 * tR;
+      return 'hsl(0, 80%,' + lR + '%)';
+    } else {
+      var tG = (maxAll > 0) ? Math.min(1, Math.max(0, margin / maxAll)) : 0;
+      var lG = 50 - 25 * tG;
+      return 'hsl(145, 60%,' + lG + '%)';
     }
-    
-    function formatPercent(val) {
-      return (isFinite(val) ? val.toFixed(2) + '%' : 'N/A');
-    }
-    
-    function updateNoUndockTable() {
-      var data = window.eveMineralCompare && eveMineralCompare.extendedTradesData;
-      if (!data) return;
-    
-      // Read hub order from the table header so columns always match DOM
-      var hubOrder = [];
-      $('#emc-no-undock thead tr:first th').each(function (i) {
-        if (i === 0) return; // skip "Mineral"
-        hubOrder.push($(this).text().trim());
-      });
-      if (!hubOrder.length) return;
-    
-      // Fees per hub (built from current skills/standings)
-      var brokerageFees = getBrokerageAndTaxForHub(); // hub -> fee
-      var salesTaxes    = getSalesTaxForHub();        // hub -> tax
-    
-      // Gather all margins first to compute global min/max for color scaling
-      var allMargins = [];
-    
-      // Precompute margins: { mineralName: { hubName: margin } }
-      var byMineral = {};
-    
-      jQuery.each(data, function (tid, m) {
-        if (!m || !m.hubs) return;
-        var row = {};
-        hubOrder.forEach(function (hub) {
-          var h = m.hubs[hub];
-          var buy  = h && h.buy;
-          var sell = h && h.sell;
-    
-          var margin = NaN;
-          if (isFinite(buy) && isFinite(sell)) {
-            var bf = Number(brokerageFees[hub] || 0);
-            var tx = Number(salesTaxes[hub]    || 0);
-            // Cost: placing a BUY order (brokerage added)
-            var cost = buy * (1 + bf);
-            // Revenue: placing a SELL order (brokerage + tax removed)
-            var rev  = sell * (1 - bf - tx);
-            if (cost > 0 && isFinite(rev)) {
-              margin = ((rev - cost) / cost) * 100;
-              allMargins.push(margin);
-            }
+  }
+  function formatPercent(val) { return (isFinite(val) ? val.toFixed(2) + '%' : 'N/A'); }
+
+  function updateNoUndockTable() {
+    var data = window.eveMineralCompare && eveMineralCompare.extendedTradesData;
+    if (!data) return;
+
+    // Read hub order from header
+    var hubOrder = [];
+    $('#emc-no-undock thead tr:first th').each(function (i) {
+      if (i === 0) return;
+      hubOrder.push($(this).text().trim());
+    });
+    if (!hubOrder.length) return;
+
+    var brokerageFees = getBrokerageAndTaxForHub();
+    var salesTaxes    = getSalesTaxForHub();
+    var allMargins = [];
+    var byMineral = {};
+
+    jQuery.each(data, function (tid, m) {
+      if (!m || !m.hubs) return;
+      var row = {};
+      hubOrder.forEach(function (hub) {
+        var h = m.hubs[hub];
+        var buy  = h && h.buy;
+        var sell = h && h.sell;
+        var margin = NaN;
+        if (isFinite(buy) && isFinite(sell)) {
+          var bf = Number(brokerageFees[hub] || 0);
+          var tx = Number(salesTaxes[hub]    || 0);
+          var cost = buy * (1 + bf);
+          var rev  = sell * (1 - bf - tx);
+          if (cost > 0 && isFinite(rev)) {
+            margin = ((rev - cost) / cost) * 100;
+            allMargins.push(margin);
           }
-          row[hub] = margin;
-        });
-        byMineral[m.name || tid] = row;
+        }
+        row[hub] = margin;
       });
-    
-      var minAll = allMargins.length ? Math.min.apply(null, allMargins) : 0;
-      var maxAll = allMargins.length ? Math.max.apply(null, allMargins) : 0;
-    
-      // Build tbody
-      var $tbody = $('#emc-no-undock tbody').empty();
-    
-      // Keep mineral order consistent with Extended data insertion order
-      jQuery.each(data, function (tid, m) {
-        var name = m && (m.name || tid);
-        var cells = '';
-        hubOrder.forEach(function (hub) {
-          var mg = byMineral[name] ? byMineral[name][hub] : NaN;
-          var color = colorForMargin(mg, minAll, maxAll);
-          var txt = formatPercent(mg);
-          cells += '<td class="emc-td-center emc-td-nowrap" style="color:'+color+'">'+txt+'</td>';
-        });
-        $tbody.append('<tr><td>'+ (name || '') +'</td>'+cells+'</tr>');
+      byMineral[m.name || tid] = row;
+    });
+
+    var minAll = allMargins.length ? Math.min.apply(null, allMargins) : 0;
+    var maxAll = allMargins.length ? Math.max.apply(null, allMargins) : 0;
+
+    var $tbody = $('#emc-no-undock tbody').empty();
+    jQuery.each(data, function (tid, m) {
+      var name = m && (m.name || tid);
+      var cells = '';
+      hubOrder.forEach(function (hub) {
+        var mg = byMineral[name] ? byMineral[name][hub] : NaN;
+        var color = colorForMargin(mg, minAll, maxAll);
+        var txt = formatPercent(mg);
+        cells += '<td class="emc-td-center emc-td-nowrap" style="color:'+color+'">'+txt+'</td>';
+      });
+      $tbody.append('<tr><td>'+ (name || '') +'</td>'+cells+'</tr>');
+    });
+  }
+
+  // ---------- refresh (REST + cooldown + polling) ----------
+  // Poll /trades until cache is newer AND data has real prices, then swap
+  function pollForUpdateThenSwap(baselineAgeSec) {
+    var started    = Date.now();
+    var timeoutMs  = 90 * 1000;   // stop after 90s
+    var intervalMs = 5000;        // check every 5s
+    var $status    = $('#eve-mineral-status');
+
+    // While we wait, communicate background work (static copy only)
+    if ($status.length) {
+      $status.empty()
+        .append($('<strong/>').text('Refresh scheduled…'))
+        .append('<br>')
+        .append($('<em/>').text('Building market data.'));
+      $status.attr('aria-busy', 'true');
+    }
+
+    function schedule(next) {
+      if (emcPollTimer) clearTimeout(emcPollTimer);
+      emcPollTimer = setTimeout(next, intervalMs);
+    }
+
+    function tick() {
+      if (!eveMineralCompare || !eveMineralCompare.rest) return;
+      if (!eveMineralCompare.rest.tradesUrl) return;
+
+      $.getJSON(addCacheBuster(eveMineralCompare.rest.tradesUrl), function(resp){
+        var age   = Number(resp && resp.cache_age_seconds);
+        var newer = Number.isFinite(age) && (age <= 120 || (Number.isFinite(baselineAgeSec) && age < baselineAgeSec));
+
+        if (newer && eveMineralCompare.rest.snapshotUrl) {
+          $.getJSON(addCacheBuster(eveMineralCompare.rest.snapshotUrl), function(snap){
+            // If snapshot isn't ready (no real prices yet), keep polling
+            if (!isDataReady(snap && snap.extendedTradesData)) {
+              if ($status.length) {
+                $status.empty()
+                  .append($('<strong/>').text('Generating prices…'))
+                  .append('<br>')
+                  .append($('<em/>').text('This may take a minute or two.'));
+                $status.attr('aria-busy', 'true');
+              }
+              if (Date.now() - started < timeoutMs) schedule(tick);
+              return;
+            }
+
+            // Ready: swap DOM, init, then announce success with cache age
+            if (snap && snap.html) {
+              var $root = $('#eve-mineral-compare-tables');
+              if ($root.length) {
+                $root.replaceWith(snap.html);
+                if (snap.extendedTradesData) {
+                  eveMineralCompare.extendedTradesData = snap.extendedTradesData;
+                }
+                robustInit();
+
+                $status = $('#eve-mineral-status');
+                if ($status.length) {
+                  $status.attr('aria-busy', 'false').empty()
+                    .append($('<strong/>').text('Prices updated!'))
+                    .append('<br>')
+                    .append(document.createTextNode('Cache age: ' + prettyAge(Number(snap.cache_age_seconds))));
+                }
+              }
+            }
+          });
+          return; // snapshot handler will keep polling if needed
+        }
+
+        if (Date.now() - started < timeoutMs) {
+          schedule(tick);
+        }
       });
     }
 
-  // ---------- events ----------
-  $(document).on('change', '#buy-from-select-ext', function () {
-    try { localStorage.setItem(LS_BUY_FROM, this.value); } catch (e) {}
-    updateExtendedTradeTable();
-  });
-  $(document).on('change', '#sell-to-select-ext', function () {
-    try { localStorage.setItem(LS_SELL_TO, this.value); } catch (e) {}
-    updateExtendedTradeTable();
-  });
+    schedule(tick);
+  }
 
-  // other controls that trigger a table update
-  $(document).on('change', '#emc-limit-60k, .emc-hub-toggle', updateExtendedTradeTable);
-  $(document).on('input',  '#emc-min-margin', debounce(updateExtendedTradeTable, 200));
-
-  // skills & standings recalc
-  $(document).on('change', '.emc-skill-select', function () {
-    updateEffectiveStandings();
-    updateFeesDisplay();
-  });
-
-  $(document).on('input', '.emc-standing-input', debounce(function () {
-    updateEffectiveStandings();
-    updateFeesDisplay();
-    // persist standings
-    try {
-      var all = {};
-      $('.emc-standing-input').each(function(){
-        var key = this.getAttribute('data-standing');
-        var v = parseFloat(this.value);
-        all[key] = Number.isFinite(v) ? Math.max(-10, Math.min(10, v)) : 0;
-      });
-      localStorage.setItem(LS_STANDINGS, JSON.stringify(all));
-    } catch(e){}
-  }, 200));
-
-  // ---------- refresh click via REST (cooldown + server cache-age message) ----------
   $(document).on('click', '#eve-mineral-refresh', function (e) {
     e.preventDefault();
-
     var $btn = $(this);
     if ($btn.prop('disabled')) return;
 
-    // start cooldown immediately & persist end time
     startCooldown($btn, COOLDOWN_SEC);
 
     var $status = $('#eve-mineral-status');
     $status.attr('aria-busy', 'true').text('Working...');
 
-    // abort any in-flight
+    // Abort any in-flight
     if (emcRefreshXhr && emcRefreshXhr.readyState !== 4) {
       emcRefreshXhr.abort();
     }
 
     emcRefreshXhr = $.ajax({
-      url: eveMineralCompare.rest.refreshUrl,
+      url: eveMineralCompare.rest && eveMineralCompare.rest.refreshUrl,
       method: 'POST',
+      headers: { 'X-WP-Nonce': (eveMineralCompare.rest && eveMineralCompare.rest.nonce) || '' },
       dataType: 'json',
-
       success: function (resp) {
         if (resp && resp.html) {
-          $('#eve-mineral-compare-tables').replaceWith(resp.html);
+          var $root = $('#eve-mineral-compare-tables');
+          if ($root.length) { $root.replaceWith(resp.html); }
+
+          // reselect elements after DOM swap
+          $status = $('#eve-mineral-status');
+
           if (resp.extendedTradesData) {
             eveMineralCompare.extendedTradesData = resp.extendedTradesData;
           }
@@ -539,37 +595,40 @@ jQuery(function ($) {
 
           if (resp.refreshed) {
             if (resp.partial || resp.used_stale_backup) {
-              $status.html(
-                '<strong>Partial Data Refresh</strong><br>' +
-                '<em>(Some prices updated; some served from cache due to ESI issues)</em>'
-              );
+              $status.empty()
+                .append($('<strong/>').text('Partial Data Refresh'))
+                .append('<br>')
+                .append($('<em/>').text('(Some prices updated; some served from cache due to ESI issues)'));
             } else {
               $status.text('Prices updated!');
             }
-          } else if (resp.used_cache) {
+          } else if (resp.scheduled === true) {
             var sec = Number(resp.cache_age_seconds);
-            var ageText = 'unknown';
-            if (Number.isFinite(sec) && sec >= 0) {
-              var h = Math.floor(sec / 3600);
-              var m = Math.floor((sec % 3600) / 60);
-              if (h > 0) {
-                ageText = h + ' hour' + (h === 1 ? '' : 's') + ' ' +
-                          m + ' minute' + (m === 1 ? '' : 's');
-              } else {
-                ageText = m + ' minute' + (m === 1 ? '' : 's');
-              }
-            }
-            $status.html(
-              '<strong>Used Cached Prices</strong><br>' +
-              '<em>(Cache is younger than 6 hours old)</em><br>' +
-              'Cache age: ' + ageText
-            );
+            $status.empty()
+              .append($('<strong/>').text('Refresh Scheduled'))
+              .append('<br>')
+              .append($('<em/>').text('(Refreshing in the background)'))
+              .append('<br>')
+              .append(document.createTextNode('Current cache age: ' + prettyAge(sec)));
+            // Poll ONLY when a refresh was scheduled
+            pollForUpdateThenSwap(Number(sec));
+          } else if (resp.used_cache === true) {
+            var sec2 = Number(resp.cache_age_seconds);
+            $status.empty()
+              .append($('<strong/>').text('Used Cached Prices'))
+              .append('<br>')
+              .append($('<em/>').text('(Cache is younger than 6 hours old)'))
+              .append('<br>')
+              .append(document.createTextNode('Cache age: ' + prettyAge(sec2)));
           } else {
             $status.text('No update performed.');
           }
 
           if (resp.cache_write_ok === false) {
-            $status.append('<div style="color:#a00;font-weight:bold;margin-top:4px">Warning: cache not writable; data may not persist.</div>');
+            $status.append(
+              $('<div/>').css({ color:'#a00', fontWeight:'bold', marginTop:'4px' })
+                         .text('Warning: cache not writable; data may not persist.')
+            );
           }
         } else {
           $status.text('Error refreshing data.');
@@ -577,17 +636,125 @@ jQuery(function ($) {
       },
 
       error: function (xhr, textStatus) {
+        var $st = $('#eve-mineral-status');
         if (textStatus === 'abort') return;
-        $('#eve-mineral-status').text('Network error.');
+        var msg = 'Network error.';
+        if (xhr && xhr.responseJSON && xhr.responseJSON.error) msg = xhr.responseJSON.error;
+        else if (xhr && typeof xhr.responseText === 'string' && xhr.responseText.length < 2048) {
+          try { var j = JSON.parse(xhr.responseText); if (j && j.error) msg = j.error; } catch(e){}
+        }
+        $st.text(msg);
       },
 
       complete: function(){
-        $status.attr('aria-busy', 'false');
+        $('#eve-mineral-status').attr('aria-busy', 'false');
       }
     });
   });
 
-  // ---------- cooldown helpers (persisted across DOM refresh via localStorage) ----------
+    // ---------- admin-only clear cache ----------
+    function ensureClearCacheStatus($btn) {
+      // Find or create the status container
+      var $status = $('#eve-mineral-clear-cache-status');
+    
+      if (!$status.length) {
+        $status = $('<div>', {
+          id: 'eve-mineral-clear-cache-status',
+          class: 'emc-clear-status',
+          role: 'status',
+          'aria-live': 'polite',
+          'aria-atomic': 'true'
+        });
+        $btn.after($status);
+      } else {
+        // Make sure it sits immediately after the button (DOM can be rebuilt)
+        if (!$status.prev().is($btn)) {
+          $status.detach();
+          $btn.after($status);
+        }
+        // Ensure ARIA/class attributes are intact
+        $status
+          .attr('role', 'status')
+          .attr('aria-live', 'polite')
+          .attr('aria-atomic', 'true')
+          .addClass('emc-clear-status');
+      }
+    
+      // Small helper to build the two-line, text-only content safely
+      function renderTwoLine(line1, line2) {
+        $status.empty();
+        $('<span/>', { 'class': 'emc-status-line', text: line1 }).appendTo($status);
+        $('<span/>', { 'class': 'emc-status-sub',  text: line2 }).appendTo($status);
+      }
+    
+      return {
+        setClearing: function () {
+          $status.attr('data-state', 'clearing').empty()
+            .append($('<em/>').text('Clearing cache…'));
+        },
+        setSuccess: function () {
+          // Fixed copy + exactly two lines (styling handled in CSS)
+          $status.attr('data-state', 'success');
+          renderTwoLine('Cache Cleared', 'Next price pull may take several seconds.');
+        },
+        setError: function () {
+          $status.attr('data-state', 'error').empty()
+            .append($('<span/>').text('Error clearing cache.'));
+        }
+      };
+    }
+
+  // Use it in the click handler
+  $(document).on('click', '#eve-mineral-clear-cache', function (e) {
+    e.preventDefault();
+    var $btn = $(this);
+    if ($btn.prop('disabled')) return;
+    if (!window.eveMineralCompare || !eveMineralCompare.isAdmin || !eveMineralCompare.rest || !eveMineralCompare.rest.clearCacheUrl) {
+      return;
+    }
+
+    var statusUI = ensureClearCacheStatus($btn);
+    statusUI.setClearing();
+    $btn.prop('disabled', true).text('Clearing…');
+
+    $.ajax({
+      url: eveMineralCompare.rest.clearCacheUrl,
+      method: 'POST',
+      headers: { 'X-WP-Nonce': (eveMineralCompare.rest && eveMineralCompare.rest.nonce) || '' },
+      dataType: 'json',
+      success: function () {
+        statusUI.setSuccess();
+
+        // Keep UI consistent with a fresh snapshot
+        if (eveMineralCompare.rest && eveMineralCompare.rest.snapshotUrl) {
+          $.getJSON(addCacheBuster(eveMineralCompare.rest.snapshotUrl), function (snap) {
+            if (snap && snap.html) {
+              var $root = $('#eve-mineral-compare-tables');
+              if ($root.length) {
+                $root.replaceWith(snap.html);
+                if (snap.extendedTradesData) {
+                  eveMineralCompare.extendedTradesData = snap.extendedTradesData;
+                }
+                robustInit();
+
+                // re-attach the message beneath the (new) button
+                var $newBtn = $('#eve-mineral-clear-cache');
+                ensureClearCacheStatus($newBtn).setSuccess();
+              }
+            }
+          });
+        }
+      },
+      error: function () {
+        ensureClearCacheStatus($btn).setError();
+      },
+      complete: function () {
+        $('#eve-mineral-clear-cache').prop('disabled', false).text('Clear Cache');
+      }
+    });
+  });
+
+  // ---------- cooldown helpers ----------
   function startCooldown($btn, seconds) {
     var until = Date.now() + seconds * 1000;
     try { localStorage.setItem(LS_NEXT_REFRESH_AT, String(until)); } catch(e){}
@@ -628,7 +795,7 @@ jQuery(function ($) {
     }
   }
 
-  // Sync cooldown & standings across tabs
+  // ---------- sync across tabs ----------
   window.addEventListener('storage', function (e) {
     if (e.key === LS_NEXT_REFRESH_AT) {
       emcSyncRefreshButton();
@@ -639,6 +806,18 @@ jQuery(function ($) {
       updateFeesDisplay();
     }
   });
+
+  // ---------- lazy-load extended trade data ----------
+  function loadTradesThenRender() {
+    if (!eveMineralCompare || !eveMineralCompare.rest || !eveMineralCompare.rest.tradesUrl) return;
+    $.getJSON(addCacheBuster(eveMineralCompare.rest.tradesUrl), function(resp){
+      if (resp && resp.extendedTradesData) {
+        eveMineralCompare.extendedTradesData = resp.extendedTradesData;
+        updateExtendedTradeTable();
+        updateNoUndockTable();
+      }
+    });
+  }
 
   // ---------- robust init ----------
   function robustInit() {
@@ -659,9 +838,33 @@ jQuery(function ($) {
     if (savedBuy)  $('#buy-from-select-ext').val(savedBuy);
     if (savedSell) $('#sell-to-select-ext').val(savedSell);
 
-    // if nothing saved, ensure sane defaults (buy-from=buy, sell-to=sell)
     if (!$('#buy-from-select-ext').val())  $('#buy-from-select-ext').val('buy');
     if (!$('#sell-to-select-ext').val())   $('#sell-to-select-ext').val('sell');
+
+    // Insert admin-only Clear Cache button (and status container) after Refresh button
+    try {
+      if (
+        window.eveMineralCompare &&
+        eveMineralCompare.isAdmin &&
+        eveMineralCompare.rest &&
+        eveMineralCompare.rest.clearCacheUrl
+      ) {
+        var $refresh = $('#eve-mineral-refresh');
+
+        if ($refresh.length && !$('#eve-mineral-clear-cache').length) {
+          var cls = ($refresh.attr('class') || '') + ' emc-clear-btn';
+          var $clear = $('<button type="button" id="eve-mineral-clear-cache" aria-label="Clear EVE mineral cache">Clear Cache</button>')
+            .attr('class', cls);
+
+          // Add button, then ensure the status container exists just below it
+          $refresh.after($clear);
+
+          if (!$('#eve-mineral-clear-cache-status').length) {
+            $clear.after('<div id="eve-mineral-clear-cache-status" class="emc-clear-status" role="status" aria-live="polite"></div>');
+          }
+        }
+      }
+    } catch (e) {}
 
     var tries = 0, maxTries = 25;
     var t = setInterval(function () {
@@ -681,7 +884,7 @@ jQuery(function ($) {
         clearInterval(t);
         setTimeout(updateExtendedTradeTable, 20);
         setTimeout(updateNoUndockTable, 20);
-        emcSyncRefreshButton(); // re-apply cooldown after DOM swap
+        emcSyncRefreshButton();
       } else if (tries >= maxTries) {
         clearInterval(t);
         updateFeesDisplay();
@@ -690,8 +893,47 @@ jQuery(function ($) {
         emcSyncRefreshButton();
       }
     }, 120);
+
+    loadTradesThenRender();
   }
 
   // first mount
   robustInit();
+
+  // ---------- reactive events ----------
+  $(document).on('change', '#buy-from-select-ext', function () {
+    try { localStorage.setItem(LS_BUY_FROM, this.value); } catch (e) {}
+    updateExtendedTradeTable();
+  });
+  $(document).on('change', '#sell-to-select-ext', function () {
+    try { localStorage.setItem(LS_SELL_TO, this.value); } catch (e) {}
+    updateExtendedTradeTable();
+  });
+  $(document).on('change', '#emc-limit-60k, .emc-hub-toggle', updateExtendedTradeTable);
+  $(document).on('input',  '#emc-min-margin', debounce(updateExtendedTradeTable, 200));
+  $(document).on('change', '.emc-skill-select', function () {
+    updateEffectiveStandings();
+    updateFeesDisplay();
+  });
+  $(document).on('input', '.emc-standing-input', debounce(function () {
+    updateEffectiveStandings();
+    updateFeesDisplay();
+    try {
+      var all = {};
+      $('.emc-standing-input').each(function(){
+        var key = this.getAttribute('data-standing');
+        var v = parseFloat(this.value);
+        all[key] = Number.isFinite(v) ? Math.max(-10, Math.min(10, v)) : 0;
+      });
+      localStorage.setItem(LS_STANDINGS, JSON.stringify(all));
+    } catch(e){}
+  }, 200));
+
+  // ---------- cleanup on unload (stop polling, abort XHR) ----------
+  window.addEventListener('beforeunload', function () {
+    if (emcPollTimer) clearTimeout(emcPollTimer);
+    if (emcRefreshXhr && emcRefreshXhr.readyState !== 4) {
+      try { emcRefreshXhr.abort(); } catch(e){}
+    }
+  });
 });
