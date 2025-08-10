@@ -2,11 +2,11 @@
 /*
 Plugin Name: EVE Mineral Compare
 Description: Shows best buy/sell prices for EVE minerals at major trade hubs, with REST refresh and caching. Adds extended trade simulation table.
-Version: 3.0
+Version: 3.1
 Author: Your Name
 */
 
-define('EVE_MINERAL_COMPARE_VERSION', '3.0');
+define('EVE_MINERAL_COMPARE_VERSION', '3.1');
 define('EVE_MINERAL_COMPARE_CACHE_AGE', 6 * 3600);
 define('EVE_MINERAL_COMPARE_MAX_ORDERS_PER_SIDE', 150);
 define('EVE_MINERAL_COMPARE_MAX_PAGES', 5);
@@ -20,12 +20,46 @@ function emc_atomic_write($path, $data) {
     return @rename($tmp, $path);
 }
 
-register_activation_hook(__FILE__, function(){
+function emc_on_activate() {
     $dir = eve_mineral_compare_cache_dir();
     if (!is_dir($dir) || !is_writable($dir)) {
         error_log('EVE Mineral Compare: cache directory not writable on activation: ' . $dir);
     }
-});
+}
+register_activation_hook(__FILE__, 'emc_on_activate');
+
+/** Uninstall cleanup handled in main file */
+function emc_rrmdir($path) {
+    if (!is_dir($path)) return;
+    $items = @scandir($path);
+    if (!$items) return;
+    foreach ($items as $item) {
+        if ($item === '.' || $item === '..') continue;
+        $full = $path . $item;
+        if (is_dir($full)) {
+            emc_rrmdir($full . '/');
+            @rmdir($full);
+        } else {
+            @unlink($full);
+        }
+    }
+    @rmdir($path);
+}
+
+function emc_on_uninstall() {
+    // Remove cached files/folders under uploads/eve-mineral-compare/
+    $upload_dir = wp_upload_dir();
+    $base = isset($upload_dir['basedir']) ? $upload_dir['basedir'] : WP_CONTENT_DIR.'/uploads';
+    $root = trailingslashit($base) . 'eve-mineral-compare/';
+
+    emc_rrmdir($root);
+
+    // Delete plugin transients
+    global $wpdb;
+    $wpdb->query("DELETE FROM {$wpdb->options} WHERE option_name LIKE '_transient_emc_refresh_lock_%' OR option_name='_transient_emc_refresh_lock_global'");
+}
+register_uninstall_hook(__FILE__, 'emc_on_uninstall');
+
 
 function emc_atomic_write_json($path, $arr) {
     $json = wp_json_encode($arr, JSON_PARTIAL_OUTPUT_ON_ERROR);
@@ -69,9 +103,31 @@ function eve_mineral_compare_cache_dir() {
     if (!file_exists($dir . 'index.html')) {
         @file_put_contents($dir . 'index.html', '', LOCK_EX);
     }
-    $ht = $dir . '.htaccess';
-    if (!file_exists($ht)) {
-        @file_put_contents($ht, "Options -Indexes\n<Files *.json>\nRequire all denied\n</Files>\n", LOCK_EX);
+    // Server detection
+    $server    = $_SERVER['SERVER_SOFTWARE'] ?? '';
+    $is_apache = stripos($server, 'Apache') !== false;
+    $is_iis    = function_exists('iis7_supports_permalinks') && iis7_supports_permalinks();
+
+    // Apache .htaccess
+    if ($is_apache) {
+        $ht = $dir . '.htaccess';
+        if (!file_exists($ht)) {
+            @file_put_contents($ht, "Options -Indexes\n<Files *.json>\nRequire all denied\n</Files>\n", LOCK_EX);
+        }
+    }
+    // IIS web.config
+    if ($is_iis) {
+        $webconfig = $dir . 'web.config';
+        if (!file_exists($webconfig)) {
+            @file_put_contents($webconfig, '<?xml version="1.0"?>
+<configuration><system.webServer>
+  <security><requestFiltering>
+    <fileExtensions>
+      <add fileExtension=".json" allowed="false" />
+    </fileExtensions>
+  </requestFiltering></security>
+</system.webServer></configuration>', LOCK_EX);
+        }
     }
     // Explain cache folder
     $readme = $dir . 'README.txt';
@@ -79,9 +135,9 @@ function eve_mineral_compare_cache_dir() {
         @file_put_contents($readme,
             "EVE Mineral Compare cache folder.\n".
             "Safe to delete; files will be recreated.\n".
-            "JSON files are blocked from direct web access on Apache via .htaccess.\n".
-            "For Nginx, add a location block that denies *.json in this folder.\n".
-            "For IIS, add a web.config rule to block *.json.\n", LOCK_EX);
+            "Apache: .htaccess blocks *.json here.\n".
+            "Nginx: deny *.json here with a location block.\n".
+            "IIS: web.config blocks *.json here.\n", LOCK_EX);
     }
 
     return $dir;
@@ -137,7 +193,7 @@ function eve_mc_http_get($url, $timeout=20, $retries=2) {
     $delay = 0.3;
     $resp  = null;
     for ($i=0; $i <= $retries; $i++) {
-        $resp = wp_remote_get($url, $args);
+        $resp = wp_safe_remote_get($url, $args);
         if (!is_wp_error($resp)) {
             $code = wp_remote_retrieve_response_code($resp);
             if ($code === 200) return $resp;
@@ -154,7 +210,7 @@ function eve_mc_http_get($url, $timeout=20, $retries=2) {
             $remain = (int) wp_remote_retrieve_header($resp, 'x-esi-error-limit-remain');
             $reset  = (int) wp_remote_retrieve_header($resp, 'x-esi-error-limit-reset');
             if ($remain !== 0 && $remain <= 2 && $reset > 0) {
-                usleep(min(1500000, $reset * 300000)); // 0.3s per sec left, max ~1.5s
+                usleep(min(1500000, $reset * 300000)); // ~0.3s per sec left, capped
             }
         }
         // add jitter
@@ -163,6 +219,41 @@ function eve_mc_http_get($url, $timeout=20, $retries=2) {
         $delay *= 2;
     }
     return $resp; // return last response (could be WP_Error)
+}
+
+/** Strict host/scheme HTTP with custom headers (ETag etc.) */
+function emc_http_get_with_headers($url, array $headers = [], $timeout = 20, $retries = 2) {
+    $parts = wp_parse_url($url);
+    if (!$parts || !isset($parts['host']) || strtolower($parts['host']) !== 'esi.evetech.net' || ($parts['scheme'] ?? '') !== 'https') {
+        return new WP_Error('emc_bad_url', 'Blocked unexpected URL');
+    }
+    $args = [
+        'timeout'      => $timeout,
+        'redirection'  => 1,
+        'reject_unsafe_urls' => true,
+        'headers'      => array_merge(['User-Agent' => 'EVE Mineral Compare v' . EVE_MINERAL_COMPARE_VERSION], $headers),
+    ];
+    $delay = 0.3;
+    $resp  = null;
+    for ($i=0; $i <= $retries; $i++) {
+        $resp = wp_safe_remote_get($url, $args);
+        if (!is_wp_error($resp)) {
+            $code = wp_remote_retrieve_response_code($resp);
+            if ($code === 200 || $code === 304) return $resp;
+
+            if (in_array($code, [420,429,503], true)) {
+                $reset = (int) wp_remote_retrieve_header($resp, 'x-esi-error-limit-reset');
+                if ($reset > 0) usleep(min(3000000, $reset * 500000));
+            }
+            $remain = (int) wp_remote_retrieve_header($resp, 'x-esi-error-limit-remain');
+            $reset  = (int) wp_remote_retrieve_header($resp, 'x-esi-error-limit-reset');
+            if ($remain !== 0 && $remain <= 2 && $reset > 0) usleep(min(1500000, $reset * 300000));
+        }
+        $jitter = mt_rand(0, 100) / 1000.0;
+        usleep((int)(($delay + $jitter) * 1e6));
+        $delay *= 2;
+    }
+    return $resp;
 }
 
 /**
@@ -184,7 +275,7 @@ function eve_mineral_compare_fetch_market_page($region, $tid, $page, array &$eta
     ];
     if ($etag) $args['headers']['If-None-Match'] = $etag;
 
-    $resp = wp_remote_get($url, $args);
+    $resp = emc_http_get_with_headers($url, $args['headers'] ?? [], 20, 2);
     if (is_wp_error($resp)) return null;
 
     // Gentle rate-limit backoff near edge
@@ -209,7 +300,7 @@ function eve_mineral_compare_fetch_market_page($region, $tid, $page, array &$eta
         }
         // 304 but we don't have a cached body → one-time unconditional refetch
         unset($args['headers']['If-None-Match']);
-        $resp = wp_remote_get($url, $args);
+        $resp = emc_http_get_with_headers($url, $args['headers'] ?? [], 20, 2);
         if (is_wp_error($resp)) return null;
         $code = wp_remote_retrieve_response_code($resp);
     }
@@ -323,7 +414,13 @@ function eve_mineral_compare_save_cache_chunks(array $data) {
         if (file_exists($old)) @unlink($old);
     }
     for ($i=1; $i<=count($chunks); $i++) {
-        @rename("{$tmpPrefix}_{$i}.json", "{$prefix}_{$i}.json");
+        $ok = @rename("{$tmpPrefix}_{$i}.json", "{$prefix}_{$i}.json");
+        if (!$ok) {
+            error_log('EVE Mineral Compare: failed to swap chunk '.$i);
+            for ($j=1; $j<$i; $j++) { @unlink("{$prefix}_{$j}.json"); }
+            if ($lock) { @flock($lock, LOCK_UN); @fclose($lock); }
+            return false;
+        }
     }
 
     if ($lock) { @flock($lock, LOCK_UN); @fclose($lock); }
@@ -473,9 +570,10 @@ function eve_mineral_compare_build_table_rows($minerals, $hubs, $data, $type) {
             $vals[] = $val;
         }
 
-        // Tie-aware tiers with epsilon
+        // Tie-aware tiers with epsilon (keep existing shading logic: buy highest best, sell lowest best handled implicitly below)
         $sorted = $vals;
-        arsort($sorted);
+        arsort($sorted); // Keep as-is per request; shading unchanged
+
         $unique = [];
         foreach ($sorted as $i => $v) {
             if ($v === null) continue;
@@ -566,10 +664,15 @@ add_action('wp_enqueue_scripts', function() {
     $__extended = eve_mineral_compare_prepare_best_trade_data($__used_stale_on_load);
     wp_localize_script('eve-mineral-compare-js', 'eveMineralCompare', [
         'rest' => [
-            'refreshUrl' => esc_url_raw( rest_url('emc/v1/refresh') ),
+            'refreshUrl' => esc_url_raw(rest_url('emc/v1/refresh')),
+            'tradesUrl'  => esc_url_raw(rest_url('emc/v1/trades')),
+            'nonce'      => wp_create_nonce('wp_rest'),
+            'snapshotUrl'=> esc_url_raw(rest_url('emc/v1/snapshot')),
+            'clearCacheUrl'=> esc_url_raw(rest_url('emc/v1/clear-cache')),
         ],
         'extendedTradesData' => $__extended,
         'usedStaleOnLoad'    => $__used_stale_on_load ? true : false,
+        'isAdmin'            => current_user_can('manage_options'),
     ]);
 });
 
@@ -583,8 +686,15 @@ function emc_client_key() {
         return 'user_' . get_current_user_id();
     }
     $ip = $_SERVER['REMOTE_ADDR'] ?? '';
-    return 'ip_' . md5($ip);
+    $ua = $_SERVER['HTTP_USER_AGENT'] ?? '';
+    return 'anon_' . md5($ip . '|' . $ua);
 }
+
+/** Background refresh action (wp-cron) */
+add_action('emc_do_refresh', function(){
+    $refreshed = $partial = $used_stale_backup = false; $write_ok = true;
+    eve_mineral_compare_update_cache(true, $refreshed, $partial, $used_stale_backup, $write_ok);
+});
 
 /** REST endpoints (replace admin-ajax) */
 add_action('rest_api_init', function () {
@@ -592,52 +702,55 @@ add_action('rest_api_init', function () {
         'methods'  => 'POST',
         'permission_callback' => '__return_true',
         'callback' => function (\WP_REST_Request $req) {
-            // Per-IP throttle
+            // Per-ID short throttle (avoid button spam)
             $key = emc_client_key();
             $transient_key = 'emc_refresh_lock_' . $key;
             if (get_transient($transient_key)) {
                 return new \WP_REST_Response(['error'=>'Please wait before refreshing again.'], 429);
             }
             set_transient($transient_key, true, 20);
-
-            // Global lock to prevent stampede
-            $global_lock = 'emc_refresh_lock_global';
-            $busy = false;
-            $used_cache = false;
-            $refreshed  = false;
-            $partial    = false;
-            $used_stale_backup = false;
-            $write_ok = true;
-
-            if (get_transient($global_lock)) {
-                // Another request is refreshing right now; reuse current cache
-                $busy = true;
-                $used_cache = true;
-            } else {
-                if (eve_mineral_compare_cache_is_fresh()) {
-                    $used_cache = true;
-                } else {
-                    set_transient($global_lock, true, 90); // keep short; just enough to avoid dogpile
-                    eve_mineral_compare_update_cache(true, $refreshed, $partial, $used_stale_backup, $write_ok);
-                    delete_transient($global_lock);
-                }
-            }
-
-            $full_html = eve_mineral_compare_render_tables();
-
+            
+            // Always respect 6h rule: if cache is fresh, DO NOT schedule a refresh
             $first_chunk = eve_mineral_compare_cache_prefix()."_1.json";
             $cache_age_seconds = (file_exists($first_chunk)) ? max(0, time() - filemtime($first_chunk)) : null;
-
+            
+            if (eve_mineral_compare_cache_is_fresh()) {
+                $full_html = eve_mineral_compare_render_tables();
+                return new \WP_REST_Response([
+                    'scheduled'  => false,
+                    'message'    => 'Cache is still fresh (under 6 hours).',
+                    'html'       => $full_html,
+                    'extendedTradesData' => eve_mineral_compare_prepare_best_trade_data(),
+                    'refreshed'  => false,
+                    'used_cache' => true,
+                    'busy'       => false,
+                    'partial'    => false,
+                    'used_stale_backup' => false,
+                    'cache_age_seconds' => $cache_age_seconds,
+                    'cache_write_ok'    => true,
+                ], 200);
+            }
+            
+            // Cache is stale → schedule a refresh once (avoid duplicate scheduling)
+            if (!wp_next_scheduled('emc_do_refresh')) {
+                wp_schedule_single_event(time() + 5, 'emc_do_refresh');
+            }
+            
+            // Return current snapshot while background refresh runs
+            $full_html = eve_mineral_compare_render_tables();
+            
             return new \WP_REST_Response([
-                'html' => $full_html,
+                'scheduled'  => true,
+                'message'    => 'Refresh scheduled; latest cache will be served shortly.',
+                'html'       => $full_html,
                 'extendedTradesData' => eve_mineral_compare_prepare_best_trade_data(),
-                'refreshed'  => $refreshed,
-                'used_cache' => $used_cache,
-                'busy'       => $busy,
-                'partial'    => $partial,
-                'used_stale_backup' => $used_stale_backup,
+                'refreshed'  => false,
+                'used_cache' => true,
+                'busy'       => false,
+                'partial'    => false,
+                'used_stale_backup' => false,
                 'cache_age_seconds' => $cache_age_seconds,
-                'cache_write_ok'    => $write_ok,
+                'cache_write_ok'    => true,
             ], 200);
         }
     ]);
@@ -654,6 +767,41 @@ add_action('rest_api_init', function () {
             ], 200);
         }
     ]);
+    register_rest_route('emc/v1', '/snapshot', [
+        'methods'  => 'GET',
+        'permission_callback' => '__return_true',
+        'callback' => function () {
+            $html = eve_mineral_compare_render_tables();
+            $first = eve_mineral_compare_cache_prefix()."_1.json";
+            $age = (file_exists($first)) ? max(0, time() - filemtime($first)) : null;
+
+            return new \WP_REST_Response([
+                'html' => $html,
+                'extendedTradesData' => eve_mineral_compare_prepare_best_trade_data(),
+                'cache_age_seconds' => $age,
+            ], 200);
+        }
+    ]);
+    register_rest_route('emc/v1', '/clear-cache', [
+        'methods'  => 'POST',
+        'permission_callback' => function () {
+            return current_user_can('manage_options');
+        },
+        'callback' => function () {
+            $dir = eve_mineral_compare_cache_dir();
+    
+            // Easiest: reuse the helper and then recreate guards
+            emc_rrmdir($dir);
+            wp_mkdir_p($dir);
+            // this repopulates index.html, .htaccess/web.config, README.txt if missing
+            eve_mineral_compare_cache_dir();
+    
+            return new \WP_REST_Response([
+                'success' => true,
+                'message' => 'Cache cleared.'
+            ], 200);
+        }
+    ]);
 });
 
 function emc_check_cache_dir_ok() {
@@ -667,7 +815,18 @@ function emc_check_cache_dir_ok() {
 }
 add_action('admin_init', 'emc_check_cache_dir_ok');
 
+/** Limit REST headers to this plugin's endpoints only */
 add_filter('rest_pre_serve_request', function($served, $result, $request, $server){
+    // Scope headers only to our endpoints
+    try {
+        $route = is_object($request) && method_exists($request, 'get_route') ? $request->get_route() : '';
+    } catch (\Throwable $e) {
+        $route = '';
+    }
+    if (strpos($route, '/emc/v1/') !== 0) {
+        return $served;
+    }
+
     header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0', true);
     header('Pragma: no-cache', true);
     header('X-Content-Type-Options: nosniff', true);
