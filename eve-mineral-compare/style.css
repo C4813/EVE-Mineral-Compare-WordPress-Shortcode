@@ -3,7 +3,8 @@
    ========================== */
 .screen-reader-text {
   position: absolute !important;
-  height: 1px; width: 1px;
+  height: 1px;
+  width: 1px;
   overflow: hidden;
   clip: rect(1px, 1px, 1px, 1px);
   white-space: nowrap;
@@ -12,9 +13,8 @@
 /* ==========================
    Sections / spacing
    ========================== */
-.emc-section {
-  margin-bottom: 28px;
-}
+.emc-section { margin-bottom: 28px; }
+.emc-section-title { text-align: center; margin: 16px 0 10px; }
 
 /* ==========================
    User Inputs (skills + standings)
@@ -27,11 +27,7 @@
   margin-bottom: 20px;
 }
 
-#eve-mineral-user-inputs > div {
-  min-width: 260px;
-  flex: 0 0 auto;
-}
-
+#eve-mineral-user-inputs > div { min-width: 260px; flex: 0 0 auto; }
 #eve-mineral-user-inputs > div:first-child {
   align-self: center;
   display: flex;
@@ -44,7 +40,7 @@
   text-align: center;
 }
 
-#eve-mineral-user-inputs label.emc-user-input-label {
+label.emc-user-input-label {
   display: grid;
   grid-template-columns: 1fr auto;
   align-items: center;
@@ -54,7 +50,7 @@
   max-width: 240px;
 }
 
-#eve-mineral-user-inputs label.emc-user-input-label span:first-child {
+label.emc-user-input-label span:first-child {
   white-space: nowrap;
   text-align: center;
   font-weight: normal;
@@ -67,9 +63,8 @@
 }
 
 /* ==========================
-   Refresh button & status
+   Buttons + status
    ========================== */
-/* Button (ID and class for flexibility) */
 #eve-mineral-refresh,
 .emc-refresh-btn {
   margin-top: 12px;
@@ -81,11 +76,8 @@
   border-radius: 4px;
 }
 #eve-mineral-refresh:hover,
-.emc-refresh-btn:hover {
-  background: #1d5bbf;
-}
+.emc-refresh-btn:hover { background: #1d5bbf; }
 
-/* Refresh status */
 #eve-mineral-status,
 .emc-refresh-status {
   margin-top: 5px;
@@ -94,10 +86,7 @@
   text-align: center;
 }
 
-/* ==========================
-   Clear Cache button & status
-   ========================== */
-/* Red button inserted by JS (inherits refresh button layout) */
+/* Clear Cache */
 .emc-clear-btn {
   margin-top: 6px;
   padding: 6px 12px;
@@ -107,73 +96,40 @@
   cursor: pointer;
   border-radius: 4px;
 }
-.emc-clear-btn:hover {
-  background: #b71c1c;
-}
-.emc-clear-btn:focus-visible {
-  outline: 2px solid #8e0000;
-  outline-offset: 2px;
-}
+.emc-clear-btn:hover { background: #b71c1c; }
+.emc-clear-btn:focus-visible { outline: 2px solid #8e0000; outline-offset: 2px; }
 
-/* Status container (used by JS-created #eve-mineral-clear-cache-status too) */
 #eve-mineral-clear-cache-status,
 .emc-clear-status {
   margin-top: 6px;
   text-align: center;
   display: block;
-  color: #c62828;        /* red text */
+  color: #c62828;
   font-weight: 600;
-  font-size: 0.9em;      /* slightly smaller, per request */
+  font-size: 0.9em;
   line-height: 1.25;
-  white-space: normal;
-  word-break: normal;
 }
+.emc-status-line { display: block; font-weight: 700; }
+.emc-status-sub  { display: block; font-style: italic; font-weight: 600; margin-top: 2px; }
+.emc-clear-status[data-state="clearing"] { color: #666; font-style: italic; font-weight: 500; }
 
-/* Two-line look: bold first line, italic second line */
-.emc-clear-status strong,
-#eve-mineral-clear-cache-status strong {
-  display: block;
-  font-weight: 700;
-  color: inherit;        /* inherit from state color */
-  margin: 0;
-}
-.emc-clear-status em,
-#eve-mineral-clear-cache-status em {
-  display: block;
-  font-style: italic;
-  font-weight: 600;
-  color: inherit;        /* inherit from state color */
-  margin: 2px 0 0 0;
-}
-
-/* NEW: explicit line helpers used by script.js (ensures line break) */
-.emc-status-line {
-  display: block;
-  font-weight: 700;
-  color: inherit;
-  margin: 0;
-}
-.emc-status-sub {
-  display: block;
-  font-style: italic;
-  font-weight: 600;
-  color: inherit;
-  margin: 2px 0 0 0;
-}
-
-/* State-specific colors (script sets data-state="clearing|success|error") */
-.emc-clear-status[data-state="clearing"] {
-  color: #666;
-  font-style: italic;
-  font-weight: 500;
-}
-.emc-clear-status[data-state="success"] {
-  color: #c62828;        /* red */
-  font-weight: 700;
-}
-.emc-clear-status[data-state="error"] {
-  color: #c62828;        /* red */
-  font-weight: 700;
+/* ==========================
+   Inputs inside table cells
+   (kept small; do not fill cells)
+   ========================== */
+.emc-standing-input,
+#emc-min-margin,
+.emc-adv-input {
+  width: 6.5ch;                 /* roughly 0.00 width */
+  padding: 2px 6px;
+  text-align: right;
+  display: inline-block;        /* avoids stretching */
+  box-sizing: content-box;      /* keep width based on characters */
+  font-size: inherit;
+  line-height: 1.2;
+  border: 1px solid #cfd7e3;
+  border-radius: 6px;
+  background: #fff;
 }
 
 /* ==========================
@@ -186,6 +142,7 @@
   font-size: 0.9em;
   text-align: center;
 }
+
 #eve-mineral-user-inputs table th,
 #eve-mineral-user-inputs table td {
   padding: 6px 8px;
@@ -193,237 +150,133 @@
   vertical-align: middle;
   text-align: center;
 }
+
 #eve-mineral-user-inputs table th:first-child,
-#eve-mineral-user-inputs table td:first-child {
-  text-align: left;
-}
-.emc-standing-input {
-  width: 80px;
-  text-align: right;
-}
-.emc-effective-standing {
-  display: block;
-  margin: 0 auto;
-  font-weight: normal;
-  text-align: center;
-  min-width: 44px;
-}
+#eve-mineral-user-inputs table td:first-child { text-align: left; }
+
+#eve-mineral-user-inputs table tbody tr:nth-child(odd)  { background: #ffffff; }
+#eve-mineral-user-inputs table tbody tr:nth-child(even) { background: #f7f9fc; }
+
+.emc-effective-standing { display: inline-block; min-width: 44px; }
 
 /* ==========================
-   Fees Summary
+   Brokerage & Sales Tax (compact, centered)
    ========================== */
-.emc-fees-summary-container > h4 {
-  text-align: center;
-  margin-bottom: 8px;
-}
-.emc-fees-summary-container {
-  text-align: center;
-}
+.emc-fees-summary-container > h4 { text-align: center; margin-bottom: 8px; }
+.emc-fees-summary-container { text-align: center; }
+
 #emc-fees-summary {
   display: inline-table;
   table-layout: auto;
-  width: auto !important;
-  white-space: nowrap;
+  width: auto;
   border-collapse: collapse;
+  font-size: inherit;
+  margin: 0 auto;
+  white-space: nowrap;
 }
+
 #emc-fees-summary th,
 #emc-fees-summary td {
-  padding: 8px 10px;
+  padding: 4px 6px;
   border: 1px solid #e6e6e6;
   text-align: center;
+  line-height: 1.2;
 }
-#emc-fees-summary th {
-  background: #f7f7f7;
-  font-weight: bold;
-}
-
-/* ==========================
-   Extended Trade Table — Controls Row
-   ========================== */
-#emc-hub-filters-best {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 20px;
-  margin: 8px 0 12px 0;
-  text-align: center;
-}
-#emc-hub-filters-best > span {
-  font-weight: bold;
-}
-#emc-hub-filters-best .emc-hub-container {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 18px;
-}
-#emc-hub-filters-best label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-  white-space: nowrap;
-  font-weight: normal;
-  flex-direction: row;
-}
-
-/* Limit control — checkbox and helper note beneath */
-#emc-limit-60k-container {
-  display: flex;
-  flex-direction: column;
-  align-items: center;  /* centers both the label and note horizontally */
-  text-align: center;
-}
-#emc-limit-60k-container .emc-limit-label {
-  display: inline-flex;
-  align-items: center;
-  flex-direction: row-reverse; /* checkbox on the right */
-  gap: 6px;
-  padding-left: 6px;           /* optical balance */
-}
-#emc-limit-60k-container .emc-limit-label input[type="checkbox"] {
-  margin: 0;
-}
-#emc-limit-60k-container .emc-limit-note {
-  margin-top: 2px;
-  font-size: 0.85em;
-  font-style: italic;
-  color: #666;
-  height: 1.2em;               /* reserve space to prevent jump */
-  line-height: 1.2em;
-  text-align: center;
-  visibility: hidden;
-}
-#emc-limit-60k-container .emc-limit-note.is-visible {
-  visibility: visible;
-}
-#emc-limit-60k-container sup {
-  font-size: 0.75em;
-  line-height: 1;
-  vertical-align: baseline;
-  position: relative;
-  top: -0.35em;
-}
+#emc-fees-summary th { background: #f2f4f7; font-weight: 600; }
+#emc-fees-summary tbody tr:nth-child(odd)  { background: #ffffff; }
+#emc-fees-summary tbody tr:nth-child(even) { background: #f7f9fc; }
 
 /* ==========================
    General Tables Styling
    ========================== */
-#eve-mineral-compare-tables table {
+#eve-mineral-compare-tables table.emc-main-table,
+#emc-no-undock,
+#eve-mc-extended {
   border-collapse: collapse;
   width: 100%;
   margin-bottom: 20px;
 }
-#eve-mineral-compare-tables th,
-#eve-mineral-compare-tables td {
+
+#eve-mineral-compare-tables table.emc-main-table th,
+#eve-mineral-compare-tables table.emc-main-table td,
+#emc-no-undock th, #emc-no-undock td,
+#eve-mc-extended th, #eve-mc-extended td {
   border: 1px solid #ddd;
   padding: 8px;
   text-align: center;
   vertical-align: middle;
 }
-#eve-mineral-compare-tables th {
+
+#eve-mineral-compare-tables table.emc-main-table th,
+#emc-no-undock th,
+#eve-mc-extended th {
   background-color: #f2f2f2;
   font-weight: bold;
 }
-#eve-mineral-compare-tables h3 {
-  text-align: center;
-}
-.emc-section-title {
-  text-align: center;
-  margin: 16px 0 10px;
-}
+
+#eve-mineral-compare-tables table.emc-main-table tbody tr:nth-child(odd),
+#emc-no-undock tbody tr:nth-child(odd),
+#eve-mc-extended tbody tr:nth-child(odd)  { background: #ffffff; }
+
+#eve-mineral-compare-tables table.emc-main-table tbody tr:nth-child(even),
+#emc-no-undock tbody tr:nth-child(even),
+#eve-mc-extended tbody tr:nth-child(even) { background: #f7f9fc; }
+
+#eve-mineral-compare-tables h3 { text-align: center; }
+
+/* Utilities */
+.emc-td-center { text-align: center; }
+.emc-td-right  { text-align: right; }
+.emc-td-nowrap { white-space: nowrap; }
+.emc-hidden    { display: none; }
 
 /* ==========================
-   Rank Coloring
+   Rank Coloring (Buy/Sell)
    ========================== */
 #eve-mineral-compare-table-buy td.emc-rank-1,
 #eve-mineral-compare-table-sell td.emc-rank-1 {
-  background-color: #006400;
+  background: #006400;
   color: #fff;
   font-weight: bold;
 }
+
 #eve-mineral-compare-table-buy td.emc-rank-2,
 #eve-mineral-compare-table-sell td.emc-rank-2 {
-  background-color: #7FC97F;
+  background: #7FC97F;
   color: #000;
 }
+
 #eve-mineral-compare-table-buy td.emc-rank-3,
 #eve-mineral-compare-table-sell td.emc-rank-3 {
-  background-color: #C7E9C0;
+  background: #C7E9C0;
   color: #000;
 }
 
 /* ==========================
-   Extended Trade Table
+   Extended Trade Table tweaks
    ========================== */
-#eve-mc-extended {
-  --min-margin: 0;
-  --max-margin: 0;
-  font-size: 0.85em;
-}
-#eve-mc-extended th,
-#eve-mc-extended td {
-  padding: 4px 6px;
-  white-space: nowrap;
-}
-#eve-mc-extended th .emc-th-label {
-  font-weight: 600;
-  margin-bottom: 4px;
-  white-space: nowrap;
-}
-#eve-mc-extended th .emc-th-control {
-  display: inline-block;
-}
+#eve-mc-extended { font-size: 0.85em; }
+#eve-mc-extended th .emc-th-label { font-weight: 600; margin-bottom: 4px; white-space: nowrap; }
+#eve-mc-extended th .emc-th-control { display: inline-block; }
+
 #eve-mc-extended select.emc-select {
-  background-color: #fff;
+  background: #fff;
   border: 1px solid #ccc;
   padding: 2px 18px 2px 4px;
   font-size: 0.8em;
-  min-width: auto;
-  height: auto;
   line-height: 1.2;
   text-align: center;
-  background-image: none;
-  background-repeat: no-repeat;
   appearance: auto;
-  -webkit-appearance: auto;
-  -moz-appearance: auto;
 }
-#emc-min-margin {
-  width: 72px;
-  text-align: right;
-}
+
+/* Margin cell subtle green tint (restored) */
 .emc-margin {
-  --range: max(0.0001, (var(--max-margin) - var(--min-margin)));
-  --norm: calc((var(--margin) - var(--min-margin)) / var(--range));
-  --alpha: calc(0.2 + 0.8 * clamp(0, var(--norm), 1));
-  background-color: rgba(183, 247, 176, var(--alpha));
-  transition: background-color 0.25s ease;
-}
-
-/* Alignment utilities */
-.emc-td-center { text-align: center !important; }
-.emc-td-right  { text-align: right  !important; }
-.emc-td-nowrap { white-space: nowrap; }
-.emc-hidden    { display: none !important; }
-
-/* Center Qty (4), Profit (5), and Minimum Margin % (6) in Extended Trade Opportunities */
-#eve-mc-extended th:nth-child(4),
-#eve-mc-extended td:nth-child(4),
-#eve-mc-extended td.emc-td-right:nth-child(4),
-#eve-mc-extended th:nth-child(5),
-#eve-mc-extended td:nth-child(5),
-#eve-mc-extended td.emc-td-right:nth-child(5),
-#eve-mc-extended th:nth-child(6),
-#eve-mc-extended td:nth-child(6),
-#eve-mc-extended td.emc-td-right:nth-child(6) {
-  text-align: center !important;
-}
-#eve-mc-extended td:nth-child(6) input[type="number"] {
-  text-align: center;
+  background-color: rgba(183, 247, 176, .4);
+  transition: background-color .25s ease;
 }
 
 /* ==========================
-   No Undock Trading Caption
+   No Undock Trading
    ========================== */
 .emc-aux-note {
   margin-top: -4px;
@@ -433,21 +286,283 @@
   color: #666;
   text-align: center;
 }
+#emc-no-undock td, #emc-no-undock th { text-align: center; }
 
 /* ==========================
-   No Undock Trading Table
+   Off-Hub Margin Calculator
    ========================== */
-#emc-no-undock td,
-#emc-no-undock th {
-  text-align: center;
+.emc-adv-container { text-align: center; margin-top: 24px; }
+.emc-adv-container h4 { margin: 0 0 10px 0; }
+
+.emc-adv-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 10px auto;
 }
 
+.emc-adv-inline {
+  display: inline-grid;
+  grid-template-columns: auto auto;
+  gap: 8px;
+  align-items: center;
+}
+.emc-adv-inline > span { white-space: nowrap; }
+
+.emc-adv-clear {
+  padding: 6px 12px;
+  background: #777;
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.emc-adv-clear:hover { background: #5e5e5e; }
+
+#emc-adv-table {
+  font-size: 0.85em;
+  width: auto;
+  display: inline-table;
+  margin: 0 auto;
+  border-collapse: collapse;
+  min-width: 520px;
+}
+#emc-adv-table th, #emc-adv-table td {
+  border: 1px solid #ddd;
+  padding: 6px 8px;
+  text-align: center;
+  vertical-align: middle;
+}
+#emc-adv-table th { background: #f2f2f2; font-weight: 600; }
+.emc-adv-margin { font-weight: 600; }
+.emc-adv-margin.is-pos { color: #1b5e20; }
+.emc-adv-margin.is-neg { color: #b00020; }
+
 /* ==========================
-   Responsive tweaks
+   Responsive
    ========================== */
 @media (max-width: 960px) {
   #emc-fees-summary { width: 100%; }
   #eve-mineral-user-inputs { flex-direction: column; }
   #eve-mineral-user-inputs > div { min-width: 100%; }
   #emc-hub-filters-best { gap: 12px; }
+  #emc-adv-table { min-width: 0; }
+}
+
+/* === Center the Off-Hub table and its content === */
+#emc-adv-table {
+  margin-left: auto;
+  margin-right: auto;
+}
+#emc-adv-table th,
+#emc-adv-table td {
+  text-align: center;
+}
+#emc-adv-table .emc-adv-colstack {
+  align-items: center;
+}
+
+/* === Force compact size for Base Standings inputs (beats theme rules) === */
+#eve-mineral-compare-tables .emc-main-table td .emc-standing-input,
+#eve-mineral-compare-tables .emc-standing-input {
+  width: 6.5ch;
+  padding: 2px 6px;
+  text-align: right;
+  box-sizing: border-box;
+  font: inherit;
+  line-height: 1.2;
+  height: auto;
+  min-height: 0;
+  background: #fff;
+  border: 1px solid #cfd7e3;
+  border-radius: 6px;
+  box-shadow: none;
+  margin: 0;
+}
+
+/* === Force compact size for Off-Hub Margin inputs (beats theme rules) === */
+#emc-adv-table td .emc-adv-input,
+.emc-adv-container #emc-adv-brokerage.emc-adv-input,
+.emc-adv-container #emc-adv-tax.emc-adv-input,
+.emc-adv-container .emc-adv-input {
+  width: 6.5ch;
+  padding: 2px 6px;
+  text-align: right;
+  box-sizing: border-box;
+  font: inherit;
+  line-height: 1.2;
+  height: auto;
+  min-height: 0;
+  background: #fff;
+  border: 1px solid #cfd7e3;
+  border-radius: 6px;
+  box-shadow: none;
+  margin: 0;
+}
+
+/* === Stack Sell column toggles vertically and center them === */
+#emc-adv-table .emc-adv-colstack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+/* === Extended Trade Opportunities: center tools & match input sizes === */
+#emc-hub-filters-best {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 10px 14px;
+  margin: 8px auto 16px;
+  text-align: center;
+}
+#emc-hub-filters-best .emc-hub-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+#emc-hub-filters-best .emc-limit-note {
+  width: 100%;
+  text-align: center;
+  font-size: 0.9em;
+  font-style: italic;
+  color: #555;
+  margin-top: 4px;
+}
+
+/* Extended table controls (Buy From / Sell To selects) */
+#eve-mc-extended .emc-select {
+  font: inherit;
+  line-height: 1.2;
+  height: auto;
+  min-height: 0;
+  padding: 4px 8px;
+  border: 1px solid #cfd7e3;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: none;
+}
+
+/* Minimum Margin input compact width */
+#eve-mc-extended #emc-min-margin {
+  width: 6.5ch;
+  text-align: right;
+  padding: 2px 6px;
+  box-sizing: border-box;
+  height: auto;
+  min-height: 0;
+  border: 1px solid #cfd7e3;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: none;
+  margin: 0;
+}
+
+/* === Base Standings table heading bold & content centered === */
+#emc-standing-table th {
+  font-weight: bold;
+  text-align: center;
+}
+#emc-standing-table td {
+  text-align: center;
+}
+
+/* === Base Standings: bold headers + centered content (high specificity) === */
+#eve-mineral-user-inputs .emc-standings-col table th {
+  font-weight: 700; /* force bold */
+  text-align: center;
+}
+#eve-mineral-user-inputs .emc-standings-col table td {
+  text-align: center;
+}
+#eve-mineral-user-inputs .emc-standings-col table th:first-child,
+#eve-mineral-user-inputs .emc-standings-col table td:first-child { 
+  text-align: left; 
+}
+
+/* Extended table header selects should not be bold */
+#eve-mc-extended th select.emc-select,
+#eve-mc-extended th .emc-select {
+  font-weight: 400;
+}
+
+/* === Base Standings table: center align all content except first column === */
+#eve-mineral-user-inputs .emc-standings-col table td {
+  text-align: center !important;
+}
+#eve-mineral-user-inputs .emc-standings-col table td:first-child {
+  text-align: left !important;
+}
+
+/* === Off-Hub table header styling === */
+#emc-adv-table th {
+  text-align: center !important;
+  font-weight: 700;
+}
+#emc-adv-table th .emc-adv-toggle span {
+  font-weight: 400; /* normal text for Apply Brokerage / Apply Sales Tax */
+}
+#emc-adv-table th .emc-adv-headline > span:first-child {
+  font-weight: 700; /* bold for Buy / Sell */
+}
+#emc-adv-table td {
+  text-align: center !important;
+}
+
+/* === Base Standings table: center align everything === */
+#eve-mineral-user-inputs .emc-standings-col table td {
+  text-align: center !important;
+}
+#eve-mineral-user-inputs .emc-standings-col table th {
+  text-align: center !important;
+  font-weight: 700;
+}
+
+/* === Off-Hub table header styling === */
+#emc-adv-table th {
+  text-align: center !important;
+  font-weight: 700;
+}
+#emc-adv-table th .emc-adv-toggle span {
+  font-weight: 400; /* normal text for Apply Brokerage / Apply Sales Tax */
+}
+#emc-adv-table th .emc-adv-headline > span:first-child {
+  font-weight: 700; /* bold for Buy / Sell */
+}
+#emc-adv-table td {
+  text-align: center !important;
+}
+
+/* === Base Standings: center Entity column too (override earlier rule) === */
+#eve-mineral-user-inputs .emc-standings-col table th,
+#eve-mineral-user-inputs .emc-standings-col table td {
+  text-align: center !important;
+}
+#eve-mineral-user-inputs .emc-standings-col table th:first-child,
+#eve-mineral-user-inputs .emc-standings-col table td:first-child {
+  text-align: center !important; /* override previous left align */
+}
+
+/* === Hide number input spinners across the plugin (persistently) === */
+/* WebKit (Chrome, Edge, Safari) */
+#eve-mineral-compare-tables input[type=number]::-webkit-outer-spin-button,
+#eve-mineral-compare-tables input[type=number]::-webkit-inner-spin-button,
+.emc-adv-container input[type=number]::-webkit-outer-spin-button,
+.emc-adv-container input[type=number]::-webkit-inner-spin-button,
+#eve-mc-extended input[type=number]::-webkit-outer-spin-button,
+#eve-mc-extended input[type=number]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* Firefox */
+#eve-mineral-compare-tables input[type=number],
+.emc-adv-container input[type=number],
+#eve-mc-extended input[type=number] {
+  -moz-appearance: textfield;
+  appearance: textfield;
 }
