@@ -138,7 +138,7 @@
     <div id="emc-limit-60k-container" class="emc-limit">
       <div class="emc-limit-label">
         <input type="checkbox" id="emc-limit-60k">
-        <span>Limit to 6,000,000 units (~60,000 m³)</span>
+        <span>Limit to 6,000,000 units (60,000 m³)</span>
       </div>
       <div class="emc-limit-note">Buy from Buy, Sell to Sell defaults to 100,000 units</div>
     </div>
