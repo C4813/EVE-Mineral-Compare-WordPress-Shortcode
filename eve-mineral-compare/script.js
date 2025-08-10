@@ -3,6 +3,7 @@ jQuery(function ($) {
   'use strict';
 
   var ASSUMED_UNITS = 100000;      // pseudo cap for single-price legs
+  var OFFHUB_SIM_QTY = 100000;     // simulate 100k units for off-hub fee math
   var emcRefreshXhr = null;        // tracks the current REST request
   var COOLDOWN_SEC  = 20;          // forced 20s cooldown animation
   var LS_NEXT_REFRESH_AT = 'emcNextRefreshAt';
@@ -65,7 +66,130 @@ jQuery(function ($) {
     return false;
   }
 
-  // ---------- standings & fee math ----------
+  // =========================================================
+  // Strict decimal-only inputs (with proper behavior per field)
+  // =========================================================
+  var POSITIVE_DECIMALS = '#emc-adv-brokerage, #emc-adv-tax, .emc-adv-input, #emc-min-margin';
+  var STANDINGS_INPUTS  = '.emc-standing-input';
+
+  // --- helpers
+  function normalizePositive(str) {
+    if (typeof str !== 'string') str = String(str || '');
+    str = str.replace(',', '.');                 // allow comma typing
+    str = str.replace(/[^0-9.]/g, '');           // keep digits + dot only
+    // collapse extra dots
+    var parts = str.split('.');
+    if (parts.length > 2) str = parts[0] + '.' + parts.slice(1).join('');
+    // keep max 2 decimals
+    parts = str.split('.');
+    if (parts[1]) str = parts[0] + '.' + parts[1].slice(0, 2);
+    return str;
+  }
+
+  function normalizeSigned(str) {
+    if (typeof str !== 'string') str = String(str || '');
+    str = str.replace(',', '.');
+    // keep digits, dot, one leading -
+    str = str.replace(/[^0-9.\-]/g, '');
+    // ensure single leading minus
+    str = str.replace(/(?!^)-/g, '');
+    if (str.indexOf('-') > 0) str = '-' + str.replace(/-/g, '');
+    // collapse extra dots
+    var parts = str.split('.');
+    if (parts.length > 2) str = parts[0] + '.' + parts.slice(1).join('');
+    // limit decimals
+    parts = str.split('.');
+    if (parts[1]) str = parts[0] + '.' + parts[1].slice(0, 2);
+    return str;
+  }
+
+  function allowKeysPositive(e) {
+  var k = e.key;
+  var c = e.code || '';
+  if (
+    k === 'Backspace' || k === 'Delete' || k === 'Tab' ||
+    k === 'ArrowLeft' || k === 'ArrowRight' || k === 'Home' || k === 'End' ||
+    (/^\d$/.test(k)) || k === '.' || k === ',' || k === 'Decimal' || c === 'NumpadDecimal'
+  ) return;
+  e.preventDefault();
+}
+
+
+  function allowKeysSigned(e) {
+  var k = e.key;
+  var c = e.code || '';
+  if (
+    k === 'Backspace' || k === 'Delete' || k === 'Tab' ||
+    k === 'ArrowLeft' || k === 'ArrowRight' || k === 'Home' || k === 'End' ||
+    (/^\d$/.test(k)) || k === '.' || k === ',' || k === 'Decimal' || c === 'NumpadDecimal' || k === '-'
+  ) return;
+  e.preventDefault();
+}
+
+
+  // positive-decimal fields (off-hub + min margin)
+  $(document).on('keydown', POSITIVE_DECIMALS, allowKeysPositive);
+  $(document).on('input',  POSITIVE_DECIMALS, function () {
+    var after = normalizePositive($(this).val());
+    if ($(this).val() !== after) $(this).val(after);
+  });
+  // improve soft keyboard hints without changing markup
+  $(POSITIVE_DECIMALS).attr({
+    inputmode: 'decimal',
+    pattern: '[0-9]*[\\.,]?[0-9]{0,2}',
+    step: 'any',
+    type: 'text' // ensure dot/comma allowed across browsers
+  });
+
+  // signed-decimal fields (base standings)
+  $(document).on('keydown', STANDINGS_INPUTS, allowKeysSigned);
+  $(document).on('input', STANDINGS_INPUTS, function () {
+    var val = $(this).val();
+    if (val === '') { updateEffectiveStandings(); updateFeesDisplay(); return; }
+    var after = normalizeSigned(val);
+    if (val !== after) $(this).val(after);
+    updateEffectiveStandings();
+    updateFeesDisplay();
+  });
+  // clamp to [-10,10] only when leaving the field
+  $(document).on('blur', STANDINGS_INPUTS, function () {
+    var raw = String($(this).val() || '').replace(',', '.').trim();
+    if (raw === '') {
+      // leave visually empty; treat as 0 in calculations
+      $(this).val('');
+      saveStandingsToLocalStorage();
+      updateEffectiveStandings();
+      updateFeesDisplay();
+      return;
+    }
+    var num = parseFloat(raw);
+    if (!Number.isFinite(num)) { num = 0; }
+    num = Math.max(-10, Math.min(10, num));
+    $(this).val(num.toFixed(2));
+    saveStandingsToLocalStorage();
+    updateEffectiveStandings();
+    updateFeesDisplay();
+  });
+  // ensure decimal keypad + free decimal typing for standings
+
+  // make them show placeholder 0.00 and start empty
+  $(STANDINGS_INPUTS).attr({
+    inputmode: 'decimal',
+    pattern: '-?[0-9]*[\\.,]?[0-9]{0,2}',
+    step: 'any',
+    type: 'text',
+    placeholder: '0.00'
+  });
+  $(STANDINGS_INPUTS).each(function(){
+    var v = String($(this).val() || '').trim();
+    if (v === '0' || v === '0.0' || v === '0.00') { $(this).val(''); }
+  });
+
+  
+  // initial compute so fees reflect default 0.00 values
+  updateEffectiveStandings();
+  updateFeesDisplay();
+// ---------- standings & fee math ----------
   function calcEffectiveStanding(baseStanding, connectionsSkill, diplomacySkill) {
     baseStanding = Number(baseStanding) || 0;
     if (baseStanding === 0) return 0;
@@ -294,20 +418,128 @@ jQuery(function ($) {
     return { buyHub: buyHub, sellHub: sellHub, filledQty: filled, profit: profit, margin: margin };
   }
 
+  // ---------- off-hub calculator: helpers ----------
+  function emcParsePosNumber(v) {
+    var n = (typeof v === 'string') ? v.replace(',', '.').trim() : v;
+    n = Number(n);
+    return (Number.isFinite(n) && n >= 0) ? n : NaN;
+  }
+
+  function emcSanitizeNumberInput(el) {
+    var v = el.value || '';
+    v = v.replace(/,/g, '.');          // normalize comma to dot
+    v = v.replace(/[^0-9.]/g, '');     // digits + dot only
+    v = v.replace(/(\..*)\./g, '$1');  // only one dot
+    el.value = v;
+  }
+
+  function emcComputeOffHubRow($tr, feePct, taxPct, applyBuyFee, applySellFee, applySellTax) {
+    var $buy  = $tr.find('.emc-adv-buy');
+    var $sell = $tr.find('.emc-adv-sell');
+
+    var buy  = emcParsePosNumber($buy.val());
+    var sell = emcParsePosNumber($sell.val());
+    if (!Number.isFinite(buy) || !Number.isFinite(sell)) return null;
+
+    // Simulate Q units so fees apply at true percentage scale
+    var Q = OFFHUB_SIM_QTY;
+
+    var totalBuy = buy * Q;
+    if (applyBuyFee) totalBuy *= (1 + feePct);
+    var totalSell = sell * Q;
+    if (applySellFee) totalSell *= (1 - feePct);
+    if (applySellTax) totalSell *= (1 - taxPct);
+
+    if (!(totalBuy > 0)) return null;
+
+    var margin = ((totalSell - totalBuy) / totalBuy) * 100;
+    if (!Number.isFinite(margin)) return null;
+    return margin;
+  }
+
+  function emcComputeOffHubAll() {
+    if (!$('#emc-adv-table').length) return;
+
+    var feePct = emcParsePosNumber($('#emc-adv-brokerage').val()) || 0;
+    var taxPct = emcParsePosNumber($('#emc-adv-tax').val()) || 0;
+    feePct = feePct / 100;
+    taxPct = taxPct / 100;
+
+    var applyBuyFee   = $('#emc-adv-buy-broker').is(':checked');
+    var applySellFee  = $('#emc-adv-sell-broker').is(':checked');
+    var applySellTax  = $('#emc-adv-sell-tax').is(':checked');
+
+    $('#emc-adv-table tbody tr').each(function () {
+      var $tr = $(this);
+      var m = emcComputeOffHubRow($tr, feePct, taxPct, applyBuyFee, applySellFee, applySellTax);
+      var $cell = $tr.find('.emc-adv-margin');
+      if (m == null) {
+        $cell.removeClass('is-pos is-neg').text('N/A');
+      } else {
+        $cell.text(m.toFixed(2) + '%')
+             .toggleClass('is-pos', m >= 0)
+             .toggleClass('is-neg', m < 0);
+      }
+    });
+  }
+
+  function initOffHubCalculator() {
+    if (!$('#emc-adv-table').length) return;
+
+    // Sanitize numeric on input (fees and per-row fields) and recompute
+    $(document).on('input', '#emc-adv-brokerage, #emc-adv-tax, .emc-adv-input', function () {
+      emcSanitizeNumberInput(this);
+      emcComputeOffHubAll();
+    });
+
+    // Recompute on toggles
+    $(document).on('change', '#emc-adv-buy-broker, #emc-adv-sell-broker, #emc-adv-sell-tax', function () {
+      emcComputeOffHubAll();
+    });
+
+    // Clear button
+    $(document).on('click', '#emc-adv-clear', function () {
+      $('#emc-adv-brokerage, #emc-adv-tax').val('');
+      $('#emc-adv-table .emc-adv-buy, #emc-adv-table .emc-adv-sell').val('');
+      $('#emc-adv-table .emc-adv-margin').removeClass('is-pos is-neg').text('N/A');
+    });
+
+    // Initial render
+    emcComputeOffHubAll();
+  }
+
   // ---------- effective standings UI ----------
   function updateEffectiveStandings() {
     var connections = +$('.emc-skill-select[data-skill="connections"]').val() || 0;
     var diplomacy   = +$('.emc-skill-select[data-skill="diplomacy"]').val() || 0;
+
     $('.emc-standing-input').each(function () {
-      var base = Math.min(10, Math.max(-10, +$(this).val() || 0));
-      $(this).val(base);
+      // Read raw text, allow "." or "," then parse
+      var raw = String($(this).val() || '').replace(',', '.').trim();
+      var num = parseFloat(raw);
+      // For live calc: if NaN, treat as 0; clamp to [-10, 10] for the math ONLY
+      if (!Number.isFinite(num)) num = 0;
+      var baseForCalc = Math.max(-10, Math.min(10, num));
+
       $(this).closest('tr')
         .find('.emc-effective-standing')
-        .text(calcEffectiveStanding(base, connections, diplomacy).toFixed(2));
+        .text(calcEffectiveStanding(baseForCalc, connections, diplomacy).toFixed(2));
     });
   }
 
-  // ---------- fee table build ----------
+  function saveStandingsToLocalStorage() {
+  try {
+    var data = {};
+    $(STANDINGS_INPUTS).each(function(){
+      var id = this.id || $(this).data('standing');
+      var raw = String($(this).val() || '').trim();
+      if (raw === '') return; // don't store empties; base defaults to 0
+      data[id] = raw;
+    });
+    localStorage.setItem('emc_standings', JSON.stringify(data));
+  } catch (e) {}
+};
+// ---------- fee table build ----------
   function updateFeesDisplay() {
     var acct  = +$('.emc-skill-select[data-skill="accounting"]').val() || 0;
     var br    = +$('.emc-skill-select[data-skill="broker_relations"]').val() || 0;
@@ -404,7 +636,9 @@ jQuery(function ($) {
         var key = this.getAttribute('data-standing');
         if (Object.prototype.hasOwnProperty.call(obj, key)) {
           var v = Number(obj[key]);
-          this.value = Number.isFinite(v) ? Math.max(-10, Math.min(10, v)) : 0;
+          if (!Number.isFinite(v)) v = 0;
+          v = Math.max(-10, Math.min(10, v));
+          this.value = v.toFixed(2);
         }
       });
     } catch(e){}
@@ -472,26 +706,25 @@ jQuery(function ($) {
     var $tbody = $('#emc-no-undock tbody').empty();
     jQuery.each(data, function (tid, m) {
       var name = m && (m.name || tid);
-      var cells = '';
-      hubOrder.forEach(function (hub) {
-        var mg = byMineral[name] ? byMineral[name][hub] : NaN;
-        var color = colorForMargin(mg, minAll, maxAll);
-        var txt = formatPercent(mg);
-        cells += '<td class="emc-td-center emc-td-nowrap" style="color:'+color+'">'+txt+'</td>';
-      });
-      $tbody.append('<tr><td>'+ (name || '') +'</td>'+cells+'</tr>');
-    });
+      var $tr = $('<tr/>');
+$('<td/>').text(name || '').appendTo($tr);
+hubOrder.forEach(function (hub) {
+  var mg = byMineral[name] ? byMineral[name][hub] : NaN;
+  var color = colorForMargin(mg, minAll, maxAll);
+  var txt = formatPercent(mg);
+  $('<td/>').addClass('emc-td-center emc-td-nowrap').css('color', color).text(txt).appendTo($tr);
+});
+$tbody.append($tr);
+});
   }
 
   // ---------- refresh (REST + cooldown + polling) ----------
-  // Poll /trades until cache is newer AND data has real prices, then swap
   function pollForUpdateThenSwap(baselineAgeSec) {
     var started    = Date.now();
-    var timeoutMs  = 90 * 1000;   // stop after 90s
-    var intervalMs = 5000;        // check every 5s
+    var timeoutMs  = 90 * 1000;
+    var intervalMs = 5000;
     var $status    = $('#eve-mineral-status');
 
-    // While we wait, communicate background work (static copy only)
     if ($status.length) {
       $status.empty()
         .append($('<strong/>').text('Refresh scheduled…'))
@@ -652,59 +885,50 @@ jQuery(function ($) {
     });
   });
 
-    // ---------- admin-only clear cache ----------
-    function ensureClearCacheStatus($btn) {
-      // Find or create the status container
-      var $status = $('#eve-mineral-clear-cache-status');
-    
-      if (!$status.length) {
-        $status = $('<div>', {
-          id: 'eve-mineral-clear-cache-status',
-          class: 'emc-clear-status',
-          role: 'status',
-          'aria-live': 'polite',
-          'aria-atomic': 'true'
-        });
+  // ---------- admin-only clear cache ----------
+  function ensureClearCacheStatus($btn) {
+    var $status = $('#eve-mineral-clear-cache-status');
+    if (!$status.length) {
+      $status = $('<div>', {
+        id: 'eve-mineral-clear-cache-status',
+        class: 'emc-clear-status',
+        role: 'status',
+        'aria-live': 'polite',
+        'aria-atomic': 'true'
+      });
+      $btn.after($status);
+    } else {
+      if (!$status.prev().is($btn)) {
+        $status.detach();
         $btn.after($status);
-      } else {
-        // Make sure it sits immediately after the button (DOM can be rebuilt)
-        if (!$status.prev().is($btn)) {
-          $status.detach();
-          $btn.after($status);
-        }
-        // Ensure ARIA/class attributes are intact
-        $status
-          .attr('role', 'status')
-          .attr('aria-live', 'polite')
-          .attr('aria-atomic', 'true')
-          .addClass('emc-clear-status');
       }
-    
-      // Small helper to build the two-line, text-only content safely
-      function renderTwoLine(line1, line2) {
-        $status.empty();
-        $('<span/>', { 'class': 'emc-status-line', text: line1 }).appendTo($status);
-        $('<span/>', { 'class': 'emc-status-sub',  text: line2 }).appendTo($status);
-      }
-    
-      return {
-        setClearing: function () {
-          $status.attr('data-state', 'clearing').empty()
-            .append($('<em/>').text('Clearing cache…'));
-        },
-        setSuccess: function () {
-          // Fixed copy + exactly two lines (styling handled in CSS)
-          $status.attr('data-state', 'success');
-          renderTwoLine('Cache Cleared', 'Next price pull may take several seconds.');
-        },
-        setError: function () {
-          $status.attr('data-state', 'error').empty()
-            .append($('<span/>').text('Error clearing cache.'));
-        }
-      };
+      $status
+        .attr('role', 'status')
+        .attr('aria-live', 'polite')
+        .attr('aria-atomic', 'true')
+        .addClass('emc-clear-status');
     }
+    function renderTwoLine(line1, line2) {
+      $status.empty();
+      $('<span/>', { 'class': 'emc-status-line', text: line1 }).appendTo($status);
+      $('<span/>', { 'class': 'emc-status-sub',  text: line2 }).appendTo($status);
+    }
+    return {
+      setClearing: function () {
+        $status.attr('data-state', 'clearing').empty()
+          .append($('<em/>').text('Clearing cache…'));
+      },
+      setSuccess: function () {
+        $status.attr('data-state', 'success');
+        renderTwoLine('Cache Cleared', 'Next price pull may take several seconds.');
+      },
+      setError: function () {
+        $status.attr('data-state', 'error').empty()
+          .append($('<span/>').text('Error clearing cache.'));
+      }
+    };
+  }
 
-  // Use it in the click handler
   $(document).on('click', '#eve-mineral-clear-cache', function (e) {
     e.preventDefault();
     var $btn = $(this);
@@ -724,8 +948,6 @@ jQuery(function ($) {
       dataType: 'json',
       success: function () {
         statusUI.setSuccess();
-
-        // Keep UI consistent with a fresh snapshot
         if (eveMineralCompare.rest && eveMineralCompare.rest.snapshotUrl) {
           $.getJSON(addCacheBuster(eveMineralCompare.rest.snapshotUrl), function (snap) {
             if (snap && snap.html) {
@@ -736,8 +958,6 @@ jQuery(function ($) {
                   eveMineralCompare.extendedTradesData = snap.extendedTradesData;
                 }
                 robustInit();
-
-                // re-attach the message beneath the (new) button
                 var $newBtn = $('#eve-mineral-clear-cache');
                 ensureClearCacheStatus($newBtn).setSuccess();
               }
@@ -823,10 +1043,11 @@ jQuery(function ($) {
   function robustInit() {
     // defaults
     $('.emc-skill-select').each(function(){ if (!this.value) this.value = '5'; });
-    $('#emc-min-margin').val($('#emc-min-margin').val() || '5');
+    if (!$('#emc-min-margin').val()) $('#emc-min-margin').val('5');
 
-    // restore standings BEFORE fee calc
+    // restore standings BEFORE fee calc and render live effective
     restoreStandings();
+    updateEffectiveStandings();
 
     // restore dropdown choices BEFORE any table calculations
     var savedBuy = null, savedSell = null;
@@ -841,7 +1062,7 @@ jQuery(function ($) {
     if (!$('#buy-from-select-ext').val())  $('#buy-from-select-ext').val('buy');
     if (!$('#sell-to-select-ext').val())   $('#sell-to-select-ext').val('sell');
 
-    // Insert admin-only Clear Cache button (and status container) after Refresh button
+    // Insert admin-only Clear Cache button
     try {
       if (
         window.eveMineralCompare &&
@@ -850,15 +1071,11 @@ jQuery(function ($) {
         eveMineralCompare.rest.clearCacheUrl
       ) {
         var $refresh = $('#eve-mineral-refresh');
-
         if ($refresh.length && !$('#eve-mineral-clear-cache').length) {
           var cls = ($refresh.attr('class') || '') + ' emc-clear-btn';
           var $clear = $('<button type="button" id="eve-mineral-clear-cache" aria-label="Clear EVE mineral cache">Clear Cache</button>')
             .attr('class', cls);
-
-          // Add button, then ensure the status container exists just below it
           $refresh.after($clear);
-
           if (!$('#eve-mineral-clear-cache-status').length) {
             $clear.after('<div id="eve-mineral-clear-cache-status" class="emc-clear-status" role="status" aria-live="polite"></div>');
           }
@@ -895,6 +1112,9 @@ jQuery(function ($) {
     }, 120);
 
     loadTradesThenRender();
+
+    // Initialize Off-Hub calculator (bottom table)
+    initOffHubCalculator();
   }
 
   // first mount
@@ -911,29 +1131,237 @@ jQuery(function ($) {
   });
   $(document).on('change', '#emc-limit-60k, .emc-hub-toggle', updateExtendedTradeTable);
   $(document).on('input',  '#emc-min-margin', debounce(updateExtendedTradeTable, 200));
-  $(document).on('change', '.emc-skill-select', function () {
+
+  // Live updates for skills & standings (no clamp while typing)
+  $(document).on('input change', '.emc-skill-select, .emc-standing-input', debounce(function () {
     updateEffectiveStandings();
     updateFeesDisplay();
-  });
-  $(document).on('input', '.emc-standing-input', debounce(function () {
-    updateEffectiveStandings();
-    updateFeesDisplay();
+    // Save raw (clamped on blur separately)
     try {
       var all = {};
       $('.emc-standing-input').each(function(){
         var key = this.getAttribute('data-standing');
-        var v = parseFloat(this.value);
-        all[key] = Number.isFinite(v) ? Math.max(-10, Math.min(10, v)) : 0;
+        var raw = String($(this).val() || '').replace(',', '.').trim();
+        var v = parseFloat(raw);
+        all[key] = Number.isFinite(v) ? v : 0;
       });
       localStorage.setItem(LS_STANDINGS, JSON.stringify(all));
     } catch(e){}
-  }, 200));
+  }, 150));
 
-  // ---------- cleanup on unload (stop polling, abort XHR) ----------
+  // ---------- cleanup on unload ----------
   window.addEventListener('beforeunload', function () {
     if (emcPollTimer) clearTimeout(emcPollTimer);
     if (emcRefreshXhr && emcRefreshXhr.readyState !== 4) {
       try { emcRefreshXhr.abort(); } catch(e){}
     }
   });
+
+  // ensure initial compute with empty-as-zero values
+  try { updateEffectiveStandings(); updateFeesDisplay(); } catch (e) {}
 });
+
+
+/* ==================================================================
+   PERSISTENCE (non-invasive): Min Margin + Off-Hub controls & rows
+   - Keeps original numeric behavior intact
+   - Loads after tables render, then triggers existing calculations
+   ================================================================== */
+(function($){
+  'use strict';
+
+  // LocalStorage keys
+  var LS_MIN_MARGIN = 'emcMinMargin';
+  var LS_ADV_BROKER = 'emcAdvBroker';
+  var LS_ADV_TAX    = 'emcAdvTax';
+  var LS_ADV_ROWS   = 'emcAdvRows';       // { buys:[], sells:[] }
+  var LS_ADV_TOGGLES= 'emcAdvToggles';    // { buyBroker:Boolean, sellBroker:Boolean, sellTax:Boolean }
+
+  // Ensure our targets also get the plugin's decimal filtering
+  $(function(){
+    $('#emc-min-margin, #emc-adv-brokerage, #emc-adv-tax, .emc-adv-input').addClass('emc-decimal-only');
+  });
+
+  // Minimal decimal-only filter for our fields (does not touch other logic)
+  $(document).on('input', '#emc-min-margin, #emc-adv-brokerage, #emc-adv-tax, .emc-adv-input', function () {
+    var v = String($(this).val() || '');
+    v = v.replace(',', '.');                 // comma -> dot
+    v = v.replace(/[^0-9.\-]/g, '');         // strip non-numeric
+    var firstDot = v.indexOf('.');
+    if (firstDot !== -1) {
+      v = v.slice(0, firstDot + 1) + v.slice(firstDot + 1).replace(/\./g, '');
+    }
+    // leading minus only if min < 0 (most of these are min=0, so strip minus)
+    if (this.getAttribute('min') === '0') {
+      v = v.replace(/^\-+/, '');
+    } else {
+      // keep a single leading minus
+      v = v.replace(/\-(?=.*\-)/g, '');
+    }
+    if (v.startsWith('.')) v = '0' + v;
+    $(this).val(v);
+  });
+
+  function saveMinMargin() {
+    try {
+      var v = String($('#emc-min-margin').val() || '').replace(',', '.');
+      var n = parseFloat(v);
+      if (Number.isFinite(n)) localStorage.setItem(LS_MIN_MARGIN, String(n));
+    } catch(e){}
+  }
+
+  function loadMinMargin() {
+    try {
+      var v = localStorage.getItem(LS_MIN_MARGIN);
+      if (v !== null && v !== '') $('#emc-min-margin').val(v);
+    } catch(e){}
+  }
+
+  function saveAdv() {
+    try {
+      var b = parseFloat(String($('#emc-adv-brokerage').val() || '').replace(',', '.'));
+      var t = parseFloat(String($('#emc-adv-tax').val() || '').replace(',', '.'));
+      if (Number.isFinite(b)) localStorage.setItem(LS_ADV_BROKER, String(b)); else localStorage.removeItem(LS_ADV_BROKER);
+      if (Number.isFinite(t)) localStorage.setItem(LS_ADV_TAX, String(t));   else localStorage.removeItem(LS_ADV_TAX);
+    } catch(e){}
+
+    try {
+      var buys = [], sells = [];
+      $('#emc-adv-table tbody tr').each(function(){
+        var $row = $(this);
+        var bv = String($row.find('.emc-adv-buy').val() || '').replace(',', '.');
+        var sv = String($row.find('.emc-adv-sell').val() || '').replace(',', '.');
+        var bn = parseFloat(bv); buys.push(Number.isFinite(bn) ? String(bn) : '');
+        var sn = parseFloat(sv); sells.push(Number.isFinite(sn) ? String(sn) : '');
+      });
+      localStorage.setItem(LS_ADV_ROWS, JSON.stringify({buys:buys, sells:sells}));
+    } catch(e){}
+
+    try {
+      var tgl = {
+        buyBroker:  !!document.getElementById('emc-adv-buy-broker')?.checked,
+        sellBroker: !!document.getElementById('emc-adv-sell-broker')?.checked,
+        sellTax:    !!document.getElementById('emc-adv-sell-tax')?.checked
+      };
+      localStorage.setItem(LS_ADV_TOGGLES, JSON.stringify(tgl));
+    } catch(e){}
+  }
+
+  function loadAdv() {
+    try {
+      var b = localStorage.getItem(LS_ADV_BROKER);
+      var t = localStorage.getItem(LS_ADV_TAX);
+      if (b !== null && b !== '') $('#emc-adv-brokerage').val(b);
+      if (t !== null && t !== '') $('#emc-adv-tax').val(t);
+    } catch(e){}
+
+    try {
+      var raw = localStorage.getItem(LS_ADV_ROWS);
+      if (raw) {
+        var rows = JSON.parse(raw);
+        var i = 0;
+        $('#emc-adv-table tbody tr').each(function(){
+          var $row = $(this);
+          if (rows.buys && rows.buys[i] !== undefined)  $row.find('.emc-adv-buy').val(rows.buys[i]);
+          if (rows.sells && rows.sells[i] !== undefined) $row.find('.emc-adv-sell').val(rows.sells[i]);
+          i++;
+        });
+      }
+    } catch(e){}
+
+    try {
+      var rawT = localStorage.getItem(LS_ADV_TOGGLES);
+      if (rawT) {
+        var tgl = JSON.parse(rawT);
+        if (typeof tgl.buyBroker  === 'boolean') $('#emc-adv-buy-broker').prop('checked', tgl.buyBroker);
+        if (typeof tgl.sellBroker === 'boolean') $('#emc-adv-sell-broker').prop('checked', tgl.sellBroker);
+        if (typeof tgl.sellTax    === 'boolean') $('#emc-adv-sell-tax').prop('checked', tgl.sellTax);
+      }
+    } catch(e){}
+  }
+
+  // Save on user interactions
+  $(document).on('input change', '#emc-min-margin', saveMinMargin);
+  $(document).on('input change', '#emc-adv-brokerage, #emc-adv-tax, .emc-adv-input', saveAdv);
+  $(document).on('change',       '#emc-adv-buy-broker, #emc-adv-sell-broker, #emc-adv-sell-tax', saveAdv);
+
+  // Load AFTER plugin renders tables and binds its own events,
+  // then trigger inputs so existing calculation logic runs.
+  $(window).on('load', function(){
+    function ready(){
+      return $('#emc-adv-table tbody tr').length > 0;
+    }
+    var tries = 0;
+    (function wait(){
+      if (ready()) {
+        loadMinMargin();
+        loadAdv();
+        // trigger recalculation hooks already defined by the plugin
+        $('#emc-min-margin').trigger('input');
+        $('#emc-adv-brokerage, #emc-adv-tax, .emc-adv-input').trigger('input');
+        $('#emc-adv-buy-broker, #emc-adv-sell-broker, #emc-adv-sell-tax').trigger('change');
+        return;
+      }
+      tries++;
+      if (tries < 60) setTimeout(wait, 50);
+    })();
+  });
+
+})(jQuery);
+
+/* === Numeric-only filter for plugin number inputs === */
+(function($){
+  'use strict';
+  var TARGETS = '#emc-min-margin, #emc-adv-brokerage, #emc-adv-tax, .emc-adv-input, .emc-standing-input, .emc-decimal-only';
+  $(document).on('input', TARGETS, function(){
+    var v = String($(this).val() || '');
+    v = v.replace(',', '.');             // allow comma as decimal
+    v = v.replace(/[^0-9.\-]/g, '');     // strip non-numeric
+    var d = v.indexOf('.');
+    if (d !== -1) v = v.slice(0, d+1) + v.slice(d+1).replace(/\./g, '');
+    if (this.getAttribute('min') === '0') v = v.replace(/^\-+/, '');
+    if (v.startsWith('.')) v = '0' + v;
+    $(this).val(v);
+  });
+})(jQuery);
+
+/* === Auto-calc Brokerage Fee & Sales Tax on load === */
+(function($){
+  $(window).on('load', function(){
+    try { updateEffectiveStandings(); } catch(e){}
+    try { updateFeesDisplay(); } catch(e){}
+  });
+})(jQuery);
+
+/* === Clear All also clears persisted Off-Hub values === */
+(function($){
+  var ADV_KEYS = ['emcAdvBroker','emcAdvTax','emcAdvRows','emcAdvToggles'];
+  $(document).on('click', '#emc-adv-clear', function(){
+    try { ADV_KEYS.forEach(function(k){ localStorage.removeItem(k); }); } catch(e){}
+  });
+})(jQuery);
+
+/* === Prevent duplicate Off-Hub sections after refresh === */
+(function(){
+  function dedupe(){
+    var list = document.querySelectorAll('.emc-adv-container');
+    for (var i = 1; i < list.length; i++) list[i].remove();
+  }
+  var run = function(){ requestAnimationFrame(dedupe); };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', run, {once:true}); else run();
+  if ('MutationObserver' in window) new MutationObserver(run).observe(document.body, {childList:true, subtree:true});
+  document.addEventListener('click', function(e){
+    var t = e.target;
+    if (t && (t.id === 'eve-mineral-refresh' || t.classList.contains('emc-refresh-btn'))) {
+      setTimeout(run, 30); setTimeout(run, 120);
+    }
+  }, true);
+})();
+
+/* === Auto-select all text on focus for base standings === */
+(function($){
+  $(document).on('focus', '.emc-standing-input', function(){
+    var el = this;
+    setTimeout(function(){ try { el.select(); } catch(e){} }, 0);
+  });
+})(jQuery);
