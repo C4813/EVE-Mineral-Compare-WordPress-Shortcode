@@ -24,7 +24,7 @@ Price Data is cached in `wp-content/uploads/eve-mineral-compare/cache`.
 - **No-Undock Trade Simulation**
   See the margin percentage for buying from buy and selling to sell within the same trade hubs.
 
-- **No-Hub Margin Calculation**
+- **Off-Hub Margin Calculation**
   Enter custom brokerage fees / sales tax and buy/sell values for minerals to see the margin. This is useful for buying low outside of a trade hub and selling high elsewhere/at a trade hub.
 
 - **Fee Calculations**  
