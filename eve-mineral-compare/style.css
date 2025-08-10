@@ -53,18 +53,23 @@
   width: 100%;
   max-width: 240px;
 }
+
 #eve-mineral-user-inputs label.emc-user-input-label span:first-child {
   white-space: nowrap;
   text-align: center;
   font-weight: normal;
   min-width: 130px;
 }
+
 .emc-skill-select {
   width: 100px;
   text-align: center;
 }
 
-/* Refresh button (ID and class for flexibility) */
+/* ==========================
+   Refresh button & status
+   ========================== */
+/* Button (ID and class for flexibility) */
 #eve-mineral-refresh,
 .emc-refresh-btn {
   margin-top: 12px;
@@ -87,6 +92,88 @@
   font-size: 0.85em;
   color: #666;
   text-align: center;
+}
+
+/* ==========================
+   Clear Cache button & status
+   ========================== */
+/* Red button inserted by JS (inherits refresh button layout) */
+.emc-clear-btn {
+  margin-top: 6px;
+  padding: 6px 12px;
+  background: #c62828;
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.emc-clear-btn:hover {
+  background: #b71c1c;
+}
+.emc-clear-btn:focus-visible {
+  outline: 2px solid #8e0000;
+  outline-offset: 2px;
+}
+
+/* Status container (used by JS-created #eve-mineral-clear-cache-status too) */
+#eve-mineral-clear-cache-status,
+.emc-clear-status {
+  margin-top: 6px;
+  text-align: center;
+  display: block;
+  color: #c62828;        /* red text */
+  font-weight: 600;
+  font-size: 0.9em;      /* slightly smaller, per request */
+  line-height: 1.25;
+  white-space: normal;
+  word-break: normal;
+}
+
+/* Two-line look: bold first line, italic second line */
+.emc-clear-status strong,
+#eve-mineral-clear-cache-status strong {
+  display: block;
+  font-weight: 700;
+  color: inherit;        /* inherit from state color */
+  margin: 0;
+}
+.emc-clear-status em,
+#eve-mineral-clear-cache-status em {
+  display: block;
+  font-style: italic;
+  font-weight: 600;
+  color: inherit;        /* inherit from state color */
+  margin: 2px 0 0 0;
+}
+
+/* NEW: explicit line helpers used by script.js (ensures line break) */
+.emc-status-line {
+  display: block;
+  font-weight: 700;
+  color: inherit;
+  margin: 0;
+}
+.emc-status-sub {
+  display: block;
+  font-style: italic;
+  font-weight: 600;
+  color: inherit;
+  margin: 2px 0 0 0;
+}
+
+/* State-specific colors (script sets data-state="clearing|success|error") */
+.emc-clear-status[data-state="clearing"] {
+  color: #666;
+  font-style: italic;
+  font-weight: 500;
+}
+.emc-clear-status[data-state="success"] {
+  color: #c62828;        /* red */
+  font-weight: 700;
+}
+.emc-clear-status[data-state="error"] {
+  color: #c62828;        /* red */
+  font-weight: 700;
 }
 
 /* ==========================
@@ -129,9 +216,9 @@
   text-align: center;
   margin-bottom: 8px;
 }
-
-.emc-fees-summary-container { text-align: center; }
-
+.emc-fees-summary-container {
+  text-align: center;
+}
 #emc-fees-summary {
   display: inline-table;
   table-layout: auto;
@@ -145,7 +232,6 @@
   border: 1px solid #e6e6e6;
   text-align: center;
 }
-
 #emc-fees-summary th {
   background: #f7f7f7;
   font-weight: bold;
@@ -185,27 +271,25 @@
 #emc-limit-60k-container {
   display: flex;
   flex-direction: column;
-  align-items: center; /* centers both the label and note horizontally */
+  align-items: center;  /* centers both the label and note horizontally */
   text-align: center;
 }
-
 #emc-limit-60k-container .emc-limit-label {
   display: inline-flex;
   align-items: center;
   flex-direction: row-reverse; /* checkbox on the right */
   gap: 6px;
-  padding-left: 6px; /* optical balance */
+  padding-left: 6px;           /* optical balance */
 }
 #emc-limit-60k-container .emc-limit-label input[type="checkbox"] {
   margin: 0;
 }
-
 #emc-limit-60k-container .emc-limit-note {
   margin-top: 2px;
   font-size: 0.85em;
   font-style: italic;
   color: #666;
-  height: 1.2em; /* reserve space to prevent jump */
+  height: 1.2em;               /* reserve space to prevent jump */
   line-height: 1.2em;
   text-align: center;
   visibility: hidden;
@@ -213,8 +297,6 @@
 #emc-limit-60k-container .emc-limit-note.is-visible {
   visibility: visible;
 }
-
-/* Superscript in the limit label */
 #emc-limit-60k-container sup {
   font-size: 0.75em;
   line-height: 1;
@@ -242,11 +324,9 @@
   background-color: #f2f2f2;
   font-weight: bold;
 }
-
 #eve-mineral-compare-tables h3 {
   text-align: center;
 }
-
 .emc-section-title {
   text-align: center;
   margin: 16px 0 10px;
@@ -293,7 +373,6 @@
 #eve-mc-extended th .emc-th-control {
   display: inline-block;
 }
-
 #eve-mc-extended select.emc-select {
   background-color: #fff;
   border: 1px solid #ccc;
@@ -309,12 +388,10 @@
   -webkit-appearance: auto;
   -moz-appearance: auto;
 }
-
 #emc-min-margin {
   width: 72px;
   text-align: right;
 }
-
 .emc-margin {
   --range: max(0.0001, (var(--max-margin) - var(--min-margin)));
   --norm: calc((var(--margin) - var(--min-margin)) / var(--range));
@@ -327,7 +404,7 @@
 .emc-td-center { text-align: center !important; }
 .emc-td-right  { text-align: right  !important; }
 .emc-td-nowrap { white-space: nowrap; }
-.emc-hidden { display: none !important; }
+.emc-hidden    { display: none !important; }
 
 /* Center Qty (4), Profit (5), and Minimum Margin % (6) in Extended Trade Opportunities */
 #eve-mc-extended th:nth-child(4),
@@ -341,7 +418,6 @@
 #eve-mc-extended td.emc-td-right:nth-child(6) {
   text-align: center !important;
 }
-
 #eve-mc-extended td:nth-child(6) input[type="number"] {
   text-align: center;
 }
