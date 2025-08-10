@@ -1,4 +1,4 @@
-## EVE Mineral Compare — Version 3.0
+## EVE Mineral Compare — Version 4.0
 
 ### Overview
 EVE Mineral Compare is a WordPress shortcode plugin that displays the best buy and sell prices for EVE Online minerals across major trade hubs when the shortcode `[eve_mineral_compare]` is inserted to a post/page.  
@@ -23,6 +23,9 @@ Price Data is cached in `wp-content/uploads/eve-mineral-compare/cache`.
 
 - **No-Undock Trade Simulation**
   See the margin percentage for buying from buy and selling to sell within the same trade hubs.
+
+- **No-Hub Margin Calculation**
+  Enter custom brokerage fees / sales tax and buy/sell values for minerals to see the margin. This is useful for buying low outside of a trade hub and selling high elsewhere/at a trade hub.
 
 - **Fee Calculations**  
   Dynamically apply brokerage fees and sales tax per hub based on your inputs.
