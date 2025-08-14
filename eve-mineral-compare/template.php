@@ -222,7 +222,7 @@
           <div class="emc-th-label">Minimum Margin %</div>
           <div class="emc-th-control">
             <input
-              type="number"
+              type="text"
               id="emc-min-margin"
               class="emc-decimal-only"
               value="5"
