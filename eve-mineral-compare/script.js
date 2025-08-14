@@ -140,6 +140,11 @@ jQuery(function ($) {
     step: 'any',
     type: 'text' // ensure dot/comma allowed across browsers
   });
+  // Auto-select value on focus/click for fast replacement
+  $(document).on('focus click', POSITIVE_DECIMALS, function () {
+    var el = this;
+    setTimeout(function(){ try { el.select(); } catch(e){} }, 0);
+  });
 
   // signed-decimal fields (base standings)
   $(document).on('keydown', STANDINGS_INPUTS, allowKeysSigned);
@@ -1307,22 +1312,6 @@ $tbody.append($tr);
     })();
   });
 
-})(jQuery);
-
-/* === Numeric-only filter for plugin number inputs === */
-(function($){
-  'use strict';
-  var TARGETS = '#emc-min-margin, #emc-adv-brokerage, #emc-adv-tax, .emc-adv-input, .emc-standing-input, .emc-decimal-only';
-  $(document).on('input', TARGETS, function(){
-    var v = String($(this).val() || '');
-    v = v.replace(',', '.');             // allow comma as decimal
-    v = v.replace(/[^0-9.\-]/g, '');     // strip non-numeric
-    var d = v.indexOf('.');
-    if (d !== -1) v = v.slice(0, d+1) + v.slice(d+1).replace(/\./g, '');
-    if (this.getAttribute('min') === '0') v = v.replace(/^\-+/, '');
-    if (v.startsWith('.')) v = '0' + v;
-    $(this).val(v);
-  });
 })(jQuery);
 
 /* === Auto-calc Brokerage Fee & Sales Tax on load === */
