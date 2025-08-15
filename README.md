@@ -13,7 +13,7 @@ Price Data is cached in `wp-content/uploads/eve-mineral-compare/cache`.
 
 ### Key Features
 - **Buy/Sell Price Tables**  
-  View mineral prices for all major trade hubs in EVE Online, ranked by best price.
+  View mineral prices for all major trade hubs in EVE Online, ranked by best price.<br>
   30 day trends are displayed under every price
 
 - **Skills & Standings Inputs**  
