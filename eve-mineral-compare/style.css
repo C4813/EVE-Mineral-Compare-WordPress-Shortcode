@@ -230,6 +230,14 @@ label.emc-user-input-label span:first-child {
 .emc-td-nowrap { white-space: nowrap; }
 .emc-hidden    { display: none; }
 
+.emc-buysell-note {
+  margin-top: -4px;
+  margin-bottom: 8px;
+  font-size: 0.85em;
+  font-style: italic;
+  color: #666;
+  text-align: center;
+}
 /* ==========================
    Rank Coloring (Buy/Sell)
    ========================== */
@@ -271,8 +279,7 @@ label.emc-user-input-label span:first-child {
 
 /* Margin cell subtle green tint (restored) */
 .emc-margin {
-  background-color: rgba(183, 247, 176, .4);
-  transition: background-color .25s ease;
+  background-color: transparent;
 }
 
 /* ==========================
@@ -565,4 +572,36 @@ label.emc-user-input-label span:first-child {
 #eve-mc-extended input[type=number] {
   -moz-appearance: textfield;
   appearance: textfield;
+}
+
+
+/* ==== Trend underlines in buy/sell cells ==== */
+.emc-price-val { line-height: 1.1; }
+.emc-trend-sub { font-size: 0.85em; margin-top: 0.15em; }
+.emc-trend-up { color: #4EB09B; }
+.emc-trend-down { color: #DB4325; }
+.emc-trend-flat { color: #666; }
+
+
+
+/* Value-badge shading replaces cell shading */
+.emc-badge {
+  display: inline-block;
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  line-height: 1;
+}
+.emc-rank-1-val { background: #006400; color: #fff; }
+.emc-rank-2-val { background: #7FC97F; color: #000; }
+.emc-rank-3-val { background: #C7E9C0; color: #000; }
+
+/* Neutralize old cell shading (keep text colors legible) */
+#eve-mineral-compare-table-buy td.emc-rank-1,
+#eve-mineral-compare-table-buy td.emc-rank-2,
+#eve-mineral-compare-table-buy td.emc-rank-3,
+#eve-mineral-compare-table-sell td.emc-rank-1,
+#eve-mineral-compare-table-sell td.emc-rank-2,
+#eve-mineral-compare-table-sell td.emc-rank-3 {
+  background: transparent;
+  color: inherit;
 }
