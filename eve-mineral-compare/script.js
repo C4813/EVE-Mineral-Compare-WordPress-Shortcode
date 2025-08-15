@@ -595,7 +595,7 @@ jQuery(function ($) {
     var allowed  = getAllowedHubsExtended();
     var fees     = getBrokerageAndTaxForHub();
     var taxes    = getSalesTaxForHub();
-    var qtyLimit = $('#emc-limit-60k').is(':checked') ? 6000000 : null; // 6,000,000 units (≈ 60,000 m³)
+    var qtyLimit = $('#emc-limit-60k').is(':checked') ? 6000000 : null; // 6,000,000 units (60,000 m³)
     var minMargin= parseFloat($('#emc-min-margin').val());
     if (!Number.isFinite(minMargin)) minMargin = 5;
 
@@ -615,7 +615,7 @@ jQuery(function ($) {
           '<td>'+sim.sellHub+'</td>'+
           '<td class="emc-td-right emc-td-nowrap">'+formatNumber(sim.filledQty)+'</td>'+
           '<td class="emc-td-right emc-td-nowrap">'+formatNumber(sim.profit)+'</td>'+
-          '<td class="emc-td-right emc-td-nowrap emc-margin" style="--margin:'+sim.margin+'">'+sim.margin.toFixed(2)+'%</td>'+
+          '<td class="emc-td-right emc-td-nowrap emc-margin" data-margin="'+sim.margin+'">'+sim.margin.toFixed(2)+'%</td>'+
         '</tr>'
       );
     });
@@ -624,7 +624,17 @@ jQuery(function ($) {
       $tbody.append('<tr><td colspan="6" style="text-align:center;color:#a00;font-weight:bold">No opportunities meet the current filters.</td></tr>');
     }
 
-    var el = document.getElementById('eve-mc-extended');
+    
+    // After rows built, color the margin cells using the same logic as No-Undock
+    var minAll = margins.length ? Math.min.apply(null, margins) : 0;
+    var maxAll = margins.length ? Math.max.apply(null, margins) : 0;
+    $('#eve-mc-extended td.emc-margin').each(function(){
+      var mg = parseFloat(this.getAttribute('data-margin'));
+      var color = colorForMargin(mg, minAll, maxAll);
+      this.style.color = color;
+      this.style.background = 'transparent';
+    });
+var el = document.getElementById('eve-mc-extended');
     if (el) {
       el.style.setProperty('--min-margin', String(margins.length ? Math.min.apply(null, margins) : 0));
       el.style.setProperty('--max-margin', String(margins.length ? Math.max.apply(null, margins) : 0));
@@ -651,17 +661,60 @@ jQuery(function ($) {
 
   // ---------- no-undock trading (Table 4) ----------
   function colorForMargin(margin, minAll, maxAll) {
-    if (!isFinite(margin)) return '#555';
-    if (maxAll === minAll) return margin >= 0 ? '#1b5e20' : '#b00020';
-    if (margin <= 0) {
-      var tR = (minAll < 0) ? Math.min(1, Math.max(0, (0 - margin) / (0 - minAll))) : 1;
-      var lR = 55 - 20 * tR;
-      return 'hsl(0, 80%,' + lR + '%)';
-    } else {
-      var tG = (maxAll > 0) ? Math.min(1, Math.max(0, margin / maxAll)) : 0;
-      var lG = 50 - 25 * tG;
-      return 'hsl(145, 60%,' + lG + '%)';
+    var m = toNum(margin);
+    var min = toNum(minAll);
+    var max = toNum(maxAll);
+
+    // Hard set: anything >= 30% of maxAll → darkest green
+    var capFraction = 0.3;
+    var gamma = 0.6; // lower = more spread for mids
+
+    if (!isFinite(m)) return '#555';
+
+    if (max === min) {
+      if (m < 0) return '#DB4325';
+      if (m > 0) return '#006164';
+      return '#B9DCCF';
     }
+
+    if (m < 0) return '#DB4325';
+    if (max <= 0) return m === 0 ? '#B9DCCF' : '#DB4325';
+
+    var cap = Math.max(1e-9, capFraction * max);
+    var u = Math.min(m / cap, 1); // anything >= cap is clamped
+    var t = Math.pow(u, gamma);
+
+    var stops = ['#B9DCCF', '#57C4AD', '#006164'];
+    var positions = [0, 0.05, 1];
+
+    var i = 0;
+    while (i < positions.length - 2 && t > positions[i + 1]) i++;
+
+    var t0 = positions[i], t1 = positions[i + 1];
+    var localT = (t - t0) / Math.max(1e-9, (t1 - t0));
+
+    return lerpHex(stops[i], stops[i + 1], localT);
+
+    function toNum(v) {
+      if (typeof v === 'string') v = v.trim().replace(/%$/, '');
+      var n = parseFloat(v);
+      return isNaN(n) ? NaN : n;
+    }
+    function lerpHex(h1, h2, t) {
+      var c1 = hexToRgb(h1), c2 = hexToRgb(h2);
+      var r = Math.round(c1.r + (c2.r - c1.r) * t);
+      var g = Math.round(c1.g + (c2.g - c1.g) * t);
+      var b = Math.round(c1.b + (c2.b - c1.b) * t);
+      return rgbToHex(r, g, b);
+    }
+    function hexToRgb(hex) {
+      hex = (hex + '').replace('#', '');
+      if (hex.length === 3) hex = hex.split('').map(function(c){ return c + c; }).join('');
+      var num = parseInt(hex, 16);
+      return { r: (num >> 16) & 255, g: (num >> 8) & 255, b: num & 255 };
+    }
+    function pad2(v) { v = v.toString(16); return v.length === 1 ? '0' + v : v; }
+    function rgbToHex(r, g, b) { return ('#' + pad2(r) + pad2(g) + pad2(b)).toUpperCase(); }
   }
   function formatPercent(val) { return (isFinite(val) ? val.toFixed(2) + '%' : 'N/A'); }
 
