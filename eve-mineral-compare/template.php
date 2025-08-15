@@ -108,6 +108,9 @@
 
   <!-- Buy Values Table -->
   <h3 class="emc-section-title">Buy Values</h3>
+      <div class="emc-buysell-note">
+         <em>Trend is most recent value minus the average highest buy over the past 30 days</em>
+      </div>
   <table id="eve-mineral-compare-table-buy" class="emc-main-table">
     <caption class="screen-reader-text">
       Best buy prices per hub for EVE minerals
@@ -126,7 +129,7 @@
           <td><?php echo esc_html($row['mineral']); ?></td>
           <?php foreach ($row['cells'] as $cell): ?>
             <td class="<?php echo esc_attr($cell['class']); ?>">
-              <?php echo esc_html($cell['value']); ?>
+              <?php if (isset($cell['html'])) { echo $cell['html']; } else { echo esc_html($cell['value']); } ?>
             </td>
           <?php endforeach; ?>
         </tr>
@@ -136,6 +139,9 @@
 
   <!-- Sell Values Table -->
   <h3 class="emc-section-title">Sell Values</h3>
+    <div class="emc-buysell-note">
+        <em>Trend is most recent value minus the average lowest sell over the past 30 days</em>
+    </div>
   <table id="eve-mineral-compare-table-sell" class="emc-main-table">
     <caption class="screen-reader-text">
       Best sell prices per hub for EVE minerals
@@ -154,7 +160,7 @@
           <td><?php echo esc_html($row['mineral']); ?></td>
           <?php foreach ($row['cells'] as $cell): ?>
             <td class="<?php echo esc_attr($cell['class']); ?>">
-              <?php echo esc_html($cell['value']); ?>
+              <?php if (isset($cell['html'])) { echo $cell['html']; } else { echo esc_html($cell['value']); } ?>
             </td>
           <?php endforeach; ?>
         </tr>
