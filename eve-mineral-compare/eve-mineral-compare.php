@@ -27,11 +27,11 @@ add_action('init', function(){
 /*
 Plugin Name: EVE Mineral Compare
 Description: Shows best buy/sell prices for EVE minerals at major trade hubs, with REST refresh and caching. Adds extended trade simulation table.
-Version: 4.0.1
+Version: 4.1
 Author: C4813
 */
 
-define('EVE_MINERAL_COMPARE_VERSION', '4.0.1');
+define('EVE_MINERAL_COMPARE_VERSION', '4.1');
 define('EVE_MINERAL_COMPARE_CACHE_AGE', 6 * 3600);
 define('EVE_MINERAL_COMPARE_MAX_ORDERS_PER_SIDE', 150);
 define('EVE_MINERAL_COMPARE_MAX_PAGES', 5);
@@ -244,6 +244,100 @@ function eve_mc_http_get($url, $timeout=20, $retries=2) {
     }
     return $resp; // return last response (could be WP_Error)
 }
+
+/** ================== ESI HISTORY + TREND HELPERS ================== */
+
+/**
+ * Fetch region/type daily history (cached) from ESI.
+ * Returns array of day rows (oldest->newest as per ESI).
+ */
+function eve_mc_fetch_market_history($region_id, $type_id) {
+    $ckey = "emc_hist_{$region_id}_{$type_id}";
+    $cached = get_transient($ckey);
+    if ($cached && is_array($cached)) return $cached;
+
+    $url = "https://esi.evetech.net/latest/markets/{$region_id}/history/?datasource=tranquility&type_id={$type_id}";
+    $resp = eve_mc_http_get($url);
+    if (is_wp_error($resp)) return [];
+
+    $code = wp_remote_retrieve_response_code($resp);
+    if ($code !== 200) return [];
+
+    $body = wp_remote_retrieve_body($resp);
+    $data = json_decode($body, true);
+    if (!is_array($data)) $data = [];
+
+    // Cache alongside other caches
+    set_transient($ckey, $data, EVE_MINERAL_COMPARE_CACHE_AGE);
+    return $data;
+}
+
+function emc_array_tail($arr, $n) {
+    if (!is_array($arr) || $n <= 0) return [];
+    $len = count($arr);
+    if ($len <= $n) return $arr;
+    return array_slice($arr, $len - $n, $n);
+}
+
+/**
+ * Compute trend for a given history field.
+ * Uses last 8 entries: compares today's field vs average of previous 7.
+ */
+function eve_mc_compute_trend(array $hist, $field) {
+    // Need 31 rows: today + previous 30
+    $last31 = emc_array_tail($hist, 31);
+    if (count($last31) < 31) {
+        return ['today' => null, 'avg30' => null, 'pct' => null, 'dir' => 'flat'];
+    }
+
+    // Today's row is the newest
+    $todayRow = $last31[30];
+    $prev30   = array_slice($last31, 0, 30);
+
+    // If today's field is missing, we can't compute a trend
+    if (!isset($todayRow[$field]) || !is_numeric($todayRow[$field])) {
+        return ['today' => null, 'avg30' => null, 'pct' => null, 'dir' => 'flat'];
+    }
+
+    $today = (float) $todayRow[$field];
+
+    // Average of the previous 30 values
+    $sum = 0.0;
+    $cnt = 0;
+    foreach ($prev30 as $r) {
+        if (isset($r[$field]) && is_numeric($r[$field])) {
+            $sum += (float) $r[$field];
+            $cnt++;
+        }
+    }
+
+    if ($cnt === 0) {
+        return ['today' => $today, 'avg30' => null, 'pct' => null, 'dir' => 'flat'];
+    }
+
+    $avg30 = $sum / $cnt;
+
+    // Avoid division-by-zero (or near-zero) issues
+    if ($avg30 == 0.0) {
+        return ['today' => $today, 'avg30' => $avg30, 'pct' => null, 'dir' => 'flat'];
+    }
+
+    $pct = (($today - $avg30) / $avg30) * 100.0;
+    $dir = ($pct > 0) ? 'up' : (($pct < 0) ? 'down' : 'flat');
+
+    return ['today' => $today, 'avg30' => $avg30, 'pct' => $pct, 'dir' => $dir];
+}
+
+function eve_mc_compute_sell_trend(array $hist) { // highest for Sell
+    return eve_mc_compute_trend($hist, 'highest');
+}
+function eve_mc_compute_buy_trend(array $hist) {  // lowest  for Buy
+    return eve_mc_compute_trend($hist, 'lowest');
+}
+
+/** ================================================================ */
+
+
 
 /** Strict host/scheme HTTP with custom headers (ETag etc.) */
 function emc_http_get_with_headers($url, array $headers = [], $timeout = 20, $retries = 2) {
@@ -562,13 +656,39 @@ function eve_mineral_compare_update_cache($force=false, &$refreshed=null, &$part
                 if ($bbp !== null || $bsp !== null) { $partial = true; $used_stale_backup = true; }
             }
 
+            
+            // ---- History-based trends (per region/type) ----
+            // Mapping per hub
+            $region_id = $region;
+            $hist = eve_mc_fetch_market_history($region_id, $tid);
+
+            // Compute trends using ESI history:
+            // Buy: compare current highest BUY (bbp) vs avg of previous 7 'lowest' (transaction lows)
+            // Sell: compare current lowest SELL (bsp) vs avg of previous 7 'highest' (transaction highs)
+            $buyTrend  = eve_mc_compute_buy_trend($hist);
+            $sellTrend = eve_mc_compute_sell_trend($hist);
+
             $final[$tid][$hub_name] = [
                 'buy'         => $bbp ?? 'N/A',
                 'sell'        => $bsp ?? 'N/A',
                 'buy_volume'  => $bbp ? $bbv : null,
                 'sell_volume' => $bsp ? $bsv : null,
                 'buy_orders'  => $buys,
-                'sell_orders' => $sells
+                'sell_orders' => $sells,
+                'trend' => [
+                    'buy'  => [
+                        'today' => $buyTrend['today'],
+                        'avg7'  => $buyTrend['avg7'],
+                        'pct'   => isset($buyTrend['pct']) && $buyTrend['pct'] !== null ? round($buyTrend['pct'], 2) : null,
+                        'dir'   => $buyTrend['dir']
+                    ],
+                    'sell' => [
+                        'today' => $sellTrend['today'],
+                        'avg7'  => $sellTrend['avg7'],
+                        'pct'   => isset($sellTrend['pct']) && $sellTrend['pct'] !== null ? round($sellTrend['pct'], 2) : null,
+                        'dir'   => $sellTrend['dir']
+                    ]
+                ]
             ];
         }
     }
@@ -581,34 +701,47 @@ function eve_mineral_compare_update_cache($force=false, &$refreshed=null, &$part
     return $final;
 }
 
+
 function eve_mineral_compare_build_table_rows($minerals, $hubs, $data, $type) {
     $rows = [];
     foreach ($minerals as $tid => $name) {
         $vals = [];
+        $trends = [];
+        $hubNames = [];
         foreach ($hubs as $hub) {
             $hubName = $hub['name'];
+            $hubNames[] = $hubName;
             $val = null;
             if (isset($data[$tid][$hubName][$type]) && is_numeric($data[$tid][$hubName][$type])) {
                 $val = (float)$data[$tid][$hubName][$type];
             }
             $vals[] = $val;
+
+            // Attach trend object if present
+            $t = null;
+            if (isset($data[$tid][$hubName]['trend'])) {
+                $t = ($type === 'buy') ? ($data[$tid][$hubName]['trend']['buy'] ?? null)
+                                       : ($data[$tid][$hubName]['trend']['sell'] ?? null);
+            }
+            $trends[] = $t;
         }
 
-        // Tie-aware tiers with epsilon (keep existing shading logic: buy highest best, sell lowest best handled implicitly below)
+        // Ranking shades (keep existing behavior)
         $sorted = $vals;
-        arsort($sorted); // Keep as-is per request; shading unchanged
-
+        arsort($sorted);
         $unique = [];
         foreach ($sorted as $i => $v) {
             if ($v === null) continue;
             $found = false;
             foreach ($unique as $u) {
-                if (abs($u - $v) < EVE_MINERAL_COMPARE_EPS) { $found = true; break; }
+                if (abs($v - $u) < EVE_MINERAL_COMPARE_EPS) { $found = true; break; }
             }
             if (!$found) $unique[] = $v;
+            if (count($unique) >= 3) break;
         }
-        $tiers = array_slice($unique, 0, 3);
+        $tiers = $unique;
 
+        // Build cells with price on first line and trend on second line
         $cells = [];
         foreach ($vals as $idx => $val) {
             $disp = $val === null ? 'N/A' : number_format($val, 2);
@@ -618,13 +751,27 @@ function eve_mineral_compare_build_table_rows($minerals, $hubs, $data, $type) {
                 elseif (isset($tiers[1]) && abs($val - $tiers[1]) < EVE_MINERAL_COMPARE_EPS) $class = 'emc-rank-2';
                 elseif (isset($tiers[2]) && abs($val - $tiers[2]) < EVE_MINERAL_COMPARE_EPS) $class = 'emc-rank-3';
             }
-            $cells[] = ['value' => $disp, 'class' => $class];
+
+            $t = $trends[$idx] ?? null;
+            $trendHtml = '';
+            if (is_array($t) && isset($t['pct']) && $t['pct'] !== null) {
+                $dir = $t['dir'] ?? 'flat';
+                $arrow = ($dir === 'up') ? '▲' : (($dir === 'down') ? '▼' : '◆');
+                $cls = ($dir === 'up') ? 'emc-trend-up' : (($dir === 'down') ? 'emc-trend-down' : 'emc-trend-flat');
+                $pct = number_format((float)$t['pct'], 2);
+                $trendHtml = '<div class="emc-trend-sub"><span class="'.$cls.'">'.$arrow.' '.$pct.'%</span></div>';
+            }
+
+            $html = '<div class="emc-price-val">'.esc_html($disp).'</div>'.$trendHtml;
+            $cells[] = ['html' => $html, 'class' => $class, 'value' => $disp];
         }
+
         $rows[] = ['mineral' => $name, 'cells' => $cells];
     }
     return $rows;
 }
 
+            
 /** Build localized data from cache; prefer fresh, fall back to stale. */
 function eve_mineral_compare_prepare_best_trade_data(&$used_stale = false) {
     $minerals = eve_mineral_compare_get_minerals();
