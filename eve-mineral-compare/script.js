@@ -634,12 +634,12 @@ jQuery(function ($) {
       this.style.color = color;
       this.style.background = 'transparent';
     });
-var el = document.getElementById('eve-mc-extended');
-    if (el) {
-      el.style.setProperty('--min-margin', String(margins.length ? Math.min.apply(null, margins) : 0));
-      el.style.setProperty('--max-margin', String(margins.length ? Math.max.apply(null, margins) : 0));
-    }
-  }
+    var el = document.getElementById('eve-mc-extended');
+        if (el) {
+          el.style.setProperty('--min-margin', String(margins.length ? Math.min.apply(null, margins) : 0));
+          el.style.setProperty('--max-margin', String(margins.length ? Math.max.apply(null, margins) : 0));
+        }
+      }
 
   // ---------- persist/restore standings ----------
   function restoreStandings() {
@@ -659,29 +659,54 @@ var el = document.getElementById('eve-mc-extended');
     } catch(e){}
   }
 
-  // ---------- no-undock trading (Table 4) ----------
+  // ---------- no-undock trading ----------
+  // ---------- helpers for robust scaling ----------
+  function emcPercentile(sortedNums, p) {
+    if (!sortedNums || !sortedNums.length) return 0;
+    var i = (sortedNums.length - 1) * p;
+    var lo = Math.floor(i), hi = Math.ceil(i);
+    if (lo === hi) return sortedNums[lo];
+    var t = i - lo;
+    return sortedNums[lo] * (1 - t) + sortedNums[hi] * t;
+  }
+
+  var EMC_MAX_REASONABLE_MARGIN = 1000;  // 1000% cap for display/scale
+  var EMC_MIN_BUY_FLOOR = 1.0;           // ISK; tweak if needed
+
+  function emcIsOutlierMargin(margin, buy, sell) {
+    if (!isFinite(margin) || !isFinite(buy) || !isFinite(sell) || sell <= 0) return true;
+    if (Math.abs(margin) > EMC_MAX_REASONABLE_MARGIN) return true;
+    if (buy > 0 && buy < EMC_MIN_BUY_FLOOR && sell >= 100 * buy) return true;
+    return false;
+  }
+
+  function emcRobustBounds(values) {
+    var v = (values || []).filter(Number.isFinite).slice().sort(function(a,b){return a-b;});
+    if (!v.length) return [-1, 1];
+    var p5  = emcPercentile(v, 0.05);
+    var p95 = emcPercentile(v, 0.95);
+    var span = Math.max(Math.abs(p5), Math.abs(p95), 1);
+    return [-span, span];
+  }
+
+  // ---------- color scale ----------
   function colorForMargin(margin, minAll, maxAll) {
     var m = toNum(margin);
-    var min = toNum(minAll);
-    var max = toNum(maxAll);
-
-    // Hard set: anything >= 30% of maxAll → darkest green
-    var capFraction = 0.3;
-    var gamma = 0.6; // lower = more spread for mids
-
     if (!isFinite(m)) return '#555';
 
-    if (max === min) {
+    // If everything's the same, fall back to sign-based colors
+    if (maxAll === minAll) {
       if (m < 0) return '#DB4325';
       if (m > 0) return '#006164';
       return '#B9DCCF';
     }
 
     if (m < 0) return '#DB4325';
-    if (max <= 0) return m === 0 ? '#B9DCCF' : '#DB4325';
+    if (maxAll <= 0) return m === 0 ? '#B9DCCF' : '#DB4325';
 
-    var cap = Math.max(1e-9, capFraction * max);
-    var u = Math.min(m / cap, 1); // anything >= cap is clamped
+    var span = Math.max(1e-9, Math.abs(maxAll));
+    var u = Math.min(Math.log1p(m) / Math.log1p(span), 1); // 0..1
+    var gamma = 0.6;
     var t = Math.pow(u, gamma);
 
     var stops = ['#B9DCCF', '#57C4AD', '#006164'];
@@ -716,13 +741,21 @@ var el = document.getElementById('eve-mc-extended');
     function pad2(v) { v = v.toString(16); return v.length === 1 ? '0' + v : v; }
     function rgbToHex(r, g, b) { return ('#' + pad2(r) + pad2(g) + pad2(b)).toUpperCase(); }
   }
-  function formatPercent(val) { return (isFinite(val) ? val.toFixed(2) + '%' : 'N/A'); }
 
+  // ---------- format ----------
+  function formatPercent(val, isOutlier) {
+    if (!isFinite(val)) return 'N/A';
+    if (isOutlier) {
+      return (val < 0 ? '-' : '+') + EMC_MAX_REASONABLE_MARGIN.toFixed(0) + '%';
+    }
+    return val.toFixed(2) + '%';
+  }
+
+  // ---------- main update ----------
   function updateNoUndockTable() {
     var data = window.eveMineralCompare && eveMineralCompare.extendedTradesData;
     if (!data) return;
 
-    // Read hub order from header
     var hubOrder = [];
     $('#emc-no-undock thead tr:first th').each(function (i) {
       if (i === 0) return;
@@ -732,6 +765,7 @@ var el = document.getElementById('eve-mc-extended');
 
     var brokerageFees = getBrokerageAndTaxForHub();
     var salesTaxes    = getSalesTaxForHub();
+
     var allMargins = [];
     var byMineral = {};
 
@@ -743,6 +777,8 @@ var el = document.getElementById('eve-mc-extended');
         var buy  = h && h.buy;
         var sell = h && h.sell;
         var margin = NaN;
+        var isOut = false;
+
         if (isFinite(buy) && isFinite(sell)) {
           var bf = Number(brokerageFees[hub] || 0);
           var tx = Number(salesTaxes[hub]    || 0);
@@ -750,30 +786,49 @@ var el = document.getElementById('eve-mc-extended');
           var rev  = sell * (1 - bf - tx);
           if (cost > 0 && isFinite(rev)) {
             margin = ((rev - cost) / cost) * 100;
-            allMargins.push(margin);
+            isOut = emcIsOutlierMargin(margin, buy, sell);
+            if (!isOut) {
+              allMargins.push(margin);
+            }
           }
         }
-        row[hub] = margin;
+        row[hub] = { margin: margin, outlier: isOut };
       });
       byMineral[m.name || tid] = row;
     });
 
-    var minAll = allMargins.length ? Math.min.apply(null, allMargins) : 0;
-    var maxAll = allMargins.length ? Math.max.apply(null, allMargins) : 0;
+    var bounds = emcRobustBounds(allMargins);
+    var minAll = bounds[0];
+    var maxAll = bounds[1];
 
     var $tbody = $('#emc-no-undock tbody').empty();
     jQuery.each(data, function (tid, m) {
       var name = m && (m.name || tid);
       var $tr = $('<tr/>');
-$('<td/>').text(name || '').appendTo($tr);
-hubOrder.forEach(function (hub) {
-  var mg = byMineral[name] ? byMineral[name][hub] : NaN;
-  var color = colorForMargin(mg, minAll, maxAll);
-  var txt = formatPercent(mg);
-  $('<td/>').addClass('emc-td-center emc-td-nowrap').css('color', color).text(txt).appendTo($tr);
-});
-$tbody.append($tr);
-});
+      $('<td/>').text(name || '').appendTo($tr);
+
+      hubOrder.forEach(function (hub) {
+        var cell = byMineral[name] ? byMineral[name][hub] : { margin: NaN, outlier: false };
+        var mg = cell.margin;
+        var isOut = cell.outlier;
+
+        var txt = formatPercent(mg, isOut);
+        var $td = $('<td/>')
+          .addClass('emc-td-center emc-td-nowrap')
+          .text(txt);
+
+        if (!isOut) {
+          var color = colorForMargin(mg, minAll, maxAll);
+          $td.css('color', color);
+        } else {
+          $td.css('color', '#555');
+        }
+
+        $tr.append($td);
+      });
+
+      $tbody.append($tr);
+    });
   }
 
   // ---------- refresh (REST + cooldown + polling) ----------
