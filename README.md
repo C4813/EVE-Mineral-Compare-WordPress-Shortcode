@@ -7,6 +7,8 @@ It also includes an **Extended Trade Opportunities** simulator, allowing you to 
 
 Data is fetched from the EVE ESI API with smart caching to minimize API calls while keeping information fresh.
 
+*Please note that the plugin is hard-coded not to send any ESI requests between 10:55 and 11:30 due to ESI being unreliable during down-time*
+
 Price Data is cached in `wp-content/uploads/eve-mineral-compare/cache`.
 
 ---
