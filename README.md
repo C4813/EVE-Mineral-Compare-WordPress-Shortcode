@@ -11,6 +11,8 @@ Data is fetched from the EVE ESI API with smart caching to minimize API calls wh
 
 Price Data is cached in `wp-content/uploads/eve-mineral-compare/cache`.
 
+*Due to the nature of the plugin, the shortcode should only be used on pages or posts. Functionality and display cannot be guaranteed if used in other locations, such as, sidebar widget blocks.*
+
 ---
 
 ### Key Features
@@ -21,7 +23,7 @@ Price Data is cached in `wp-content/uploads/eve-mineral-compare/cache`.
 - **Skills & Standings Inputs**  
   Set your in-game Accounting, Broker Relations, Connections, and Diplomacy levels, plus base standings with key NPC entities.
   
-- **Extended Trade Simulation**  
+- **Extended Trade Opportunities Simulation**  
   Simulate trades between hubs, applying skill and standing-based fee reductions, volume limits, and a minimum margin filter.
 
 - **No-Undock Trade Simulation**
@@ -37,7 +39,4 @@ Price Data is cached in `wp-content/uploads/eve-mineral-compare/cache`.
   Refresh market data without reloading the page — with caching to avoid unnecessary API calls.
 
 - **Volume Limiting**  
-  Option to restrict calculations to minerals fitting within 60km³ of cargo space.
-
-- **Mobile-Friendly Layout**  
-  Responsive design for both desktop and smaller screens.
+  Option to restrict calculations to minerals fitting within 60,000m³ of cargo space.
