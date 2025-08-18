@@ -14,7 +14,23 @@ jQuery(function ($) {
   // Polling timer handle so we can cancel on unload
   var emcPollTimer = null;
 
-  // ---------- utils ----------
+  
+  // ---- ESI downtime window (UTC) ----
+  function emcIsDowntimeUtc() {
+    var now = new Date();
+    var hh = now.getUTCHours();
+    var mm = now.getUTCMinutes();
+    return ( (hh === 10 && mm >= 55) || (hh === 11 && mm < 30) );
+  }
+  function emcShowDowntimeMessage() {
+    var $status = $('#eve-mineral-status');
+    if (!$status.length) return;
+    $status.empty()
+      .append($('<span/>', { 'class': 'emc-status-line', text: 'Disabled between 10:55 and 11:30 UTC' }))
+      .append($('<span/>', { 'class': 'emc-status-line', text: '( downtime +/- )' }))
+      .append($('<span/>', { 'class': 'emc-status-sub',  text: 'ESI is unreliable during this time' }));
+  }
+// ---------- utils ----------
   function formatNumber(val) {
     if (val === null || val === undefined || val === 'N/A') return 'N/A';
     var n = Number(val);
@@ -420,7 +436,7 @@ jQuery(function ($) {
 
     if (!Number.isFinite(profit) || !Number.isFinite(margin)) return null;
     if (filled <= 0) return null;
-    return { buyHub: buyHub, sellHub: sellHub, filledQty: filled, profit: profit, margin: margin };
+    return { buyHub: buyHub, sellHub: sellHub, filledQty: filled, profit: profit, margin: margin, investment: totalCost };
   }
 
   // ---------- off-hub calculator: helpers ----------
@@ -581,6 +597,23 @@ jQuery(function ($) {
   }
 
   // ---------- extended table build ----------
+  // Format ONLY the investment subline into short ISK (e.g., 234.226 b)
+  function emcFormatShortISK(n) {
+    if (!isFinite(n)) return '—';
+    var abs = Math.abs(n);
+    var sign = n < 0 ? '-' : '';
+
+    function ceilTo(num, div) {
+      return Math.ceil((num + Number.EPSILON) * 100 / div) / 100; // 2 decimals, always up
+    }
+
+    if (abs >= 1e12) return sign + ceilTo(abs, 1e12).toFixed(2) + 't';
+    if (abs >= 1e9)  return sign + ceilTo(abs, 1e9 ).toFixed(2) + 'b';
+    if (abs >= 1e6)  return sign + ceilTo(abs, 1e6 ).toFixed(2) + 'm';
+    if (abs >= 1e3)  return sign + ceilTo(abs, 1e3 ).toFixed(2) + 'k';
+    return sign + Math.ceil(abs * 100) / 100; // round up to 2 decimals
+  }
+
   function updateExtendedTradeTable() {
     var data = window.eveMineralCompare && eveMineralCompare.extendedTradesData;
     if (!data) return;
@@ -614,7 +647,7 @@ jQuery(function ($) {
           '<td>'+sim.buyHub+'</td>'+
           '<td>'+sim.sellHub+'</td>'+
           '<td class="emc-td-right emc-td-nowrap">'+formatNumber(sim.filledQty)+'</td>'+
-          '<td class="emc-td-right emc-td-nowrap">'+formatNumber(sim.profit)+'</td>'+
+          '<td class="emc-td-right emc-td-nowrap">'+formatNumber(sim.profit)+'<div class="emc-subtext"><em>Invest '+emcFormatShortISK(sim.investment)+'</em></div>'+'</td>'+
           '<td class="emc-td-right emc-td-nowrap emc-margin" data-margin="'+sim.margin+'">'+sim.margin.toFixed(2)+'%</td>'+
         '</tr>'
       );
@@ -623,7 +656,6 @@ jQuery(function ($) {
     if (!rows) {
       $tbody.append('<tr><td colspan="6" style="text-align:center;color:#a00;font-weight:bold">No opportunities meet the current filters.</td></tr>');
     }
-
     
     // After rows built, color the margin cells using the same logic as No-Undock
     var minAll = margins.length ? Math.min.apply(null, margins) : 0;
@@ -911,6 +943,13 @@ jQuery(function ($) {
     var $btn = $(this);
     if ($btn.prop('disabled')) return;
 
+
+    // Downtime guard: block refresh within 10:55–11:30 UTC
+    if (emcIsDowntimeUtc()) {
+      emcShowDowntimeMessage();
+      return;
+    }
+
     startCooldown($btn, COOLDOWN_SEC);
 
     var $status = $('#eve-mineral-status');
@@ -938,6 +977,12 @@ jQuery(function ($) {
             eveMineralCompare.extendedTradesData = resp.extendedTradesData;
           }
           robustInit();
+          if (resp && resp.downtime === true && Array.isArray(resp.downtime_lines)) {
+            var $st = $('#eve-mineral-status'); $st.empty();
+            if (resp.downtime_lines[0]) $('<span/>', { 'class': 'emc-status-line', text: resp.downtime_lines[0] }).appendTo($st);
+            if (resp.downtime_lines[1]) $('<span/>', { 'class': 'emc-status-sub',  text: resp.downtime_lines[1] }).appendTo($st);
+          }
+    
 
           if (resp.refreshed) {
             if (resp.partial || resp.used_stale_backup) {
@@ -1462,3 +1507,16 @@ jQuery(function ($) {
     setTimeout(function(){ try { el.select(); } catch(e){} }, 0);
   });
 })(jQuery);
+
+// Inject subtle subtext style for profit cell investment line
+(function ensureEtoStyles(){
+  try {
+    var id = 'emc-subtext-style';
+    if (document.getElementById(id)) return;
+    var css = '.emc-subtext{font-size:11px;line-height:1.2;color:#666;margin-top:2px;}';
+    var el = document.createElement('style');
+    el.id = id; el.type = 'text/css';
+    el.appendChild(document.createTextNode(css));
+    document.head.appendChild(el);
+  } catch(e){}
+})();
