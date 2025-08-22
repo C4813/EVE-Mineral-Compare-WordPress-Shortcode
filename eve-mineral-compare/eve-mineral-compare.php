@@ -27,11 +27,11 @@ add_action('init', function(){
 /*
 Plugin Name: EVE Mineral Compare
 Description: Shows best buy/sell prices for EVE minerals at major trade hubs, with REST refresh and caching. Adds extended trade simulation table.
-Version: 4.1.2
+Version: 4.1.3
 Author: C4813
 */
 
-define('EVE_MINERAL_COMPARE_VERSION', '4.1.2');
+define('EVE_MINERAL_COMPARE_VERSION', '4.1.3');
 define('EVE_MINERAL_COMPARE_CACHE_AGE', 6 * 3600);
 define('EVE_MINERAL_COMPARE_MAX_ORDERS_PER_SIDE', 150);
 define('EVE_MINERAL_COMPARE_MAX_PAGES', 5);
@@ -678,13 +678,13 @@ function eve_mineral_compare_update_cache($force=false, &$refreshed=null, &$part
                 'trend' => [
                     'buy'  => [
                         'today' => $buyTrend['today'],
-                        'avg7'  => $buyTrend['avg7'],
+                        'avg30'  => $buyTrend['avg30'],
                         'pct'   => isset($buyTrend['pct']) && $buyTrend['pct'] !== null ? round($buyTrend['pct'], 2) : null,
                         'dir'   => $buyTrend['dir']
                     ],
                     'sell' => [
                         'today' => $sellTrend['today'],
-                        'avg7'  => $sellTrend['avg7'],
+                        'avg30'  => $sellTrend['avg30'],
                         'pct'   => isset($sellTrend['pct']) && $sellTrend['pct'] !== null ? round($sellTrend['pct'], 2) : null,
                         'dir'   => $sellTrend['dir']
                     ]
