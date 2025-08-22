@@ -27,11 +27,11 @@ add_action('init', function(){
 /*
 Plugin Name: EVE Mineral Compare
 Description: Shows best buy/sell prices for EVE minerals at major trade hubs, with REST refresh and caching. Adds extended trade simulation table.
-Version: 4.1.3
+Version: 4.1.4
 Author: C4813
 */
 
-define('EVE_MINERAL_COMPARE_VERSION', '4.1.3');
+define('EVE_MINERAL_COMPARE_VERSION', '4.1.4');
 define('EVE_MINERAL_COMPARE_CACHE_AGE', 6 * 3600);
 define('EVE_MINERAL_COMPARE_MAX_ORDERS_PER_SIDE', 150);
 define('EVE_MINERAL_COMPARE_MAX_PAGES', 5);
