@@ -1,3 +1,4 @@
+
 /* global jQuery, eveMineralCompare */
 jQuery(function ($) {
   'use strict';
@@ -10,11 +11,13 @@ jQuery(function ($) {
   var LS_BUY_FROM  = 'emcBuyFrom';
   var LS_SELL_TO   = 'emcSellTo';
   var LS_STANDINGS = 'emcStandings';
+  // NEW: shared keys for extended table persistence
+  var LS_EXT_HUBS  = 'emcExtHubs';     // JSON array of hub ids/values
+  var LS_EXT_LIMIT = 'emcExtLimit60k'; // '1' or '0'
 
   // Polling timer handle so we can cancel on unload
   var emcPollTimer = null;
 
-  
   // ---- ESI downtime window (UTC) ----
   function emcIsDowntimeUtc() {
     var now = new Date();
@@ -30,7 +33,8 @@ jQuery(function ($) {
       .append($('<span/>', { 'class': 'emc-status-line', text: '( downtime +/- )' }))
       .append($('<span/>', { 'class': 'emc-status-sub',  text: 'ESI is unreliable during this time' }));
   }
-// ---------- utils ----------
+
+  // ---------- utils ----------
   function formatNumber(val) {
     if (val === null || val === undefined || val === 'N/A') return 'N/A';
     var n = Number(val);
@@ -120,28 +124,26 @@ jQuery(function ($) {
   }
 
   function allowKeysPositive(e) {
-  var k = e.key;
-  var c = e.code || '';
-  if (
-    k === 'Backspace' || k === 'Delete' || k === 'Tab' ||
-    k === 'ArrowLeft' || k === 'ArrowRight' || k === 'Home' || k === 'End' ||
-    (/^\d$/.test(k)) || k === '.' || k === ',' || k === 'Decimal' || c === 'NumpadDecimal'
-  ) return;
-  e.preventDefault();
-}
-
+    var k = e.key;
+    var c = e.code || '';
+    if (
+      k === 'Backspace' || k === 'Delete' || k === 'Tab' ||
+      k === 'ArrowLeft' || k === 'ArrowRight' || k === 'Home' || k === 'End' ||
+      (/^\d$/.test(k)) || k === '.' || k === ',' || k === 'Decimal' || c === 'NumpadDecimal'
+    ) return;
+    e.preventDefault();
+  }
 
   function allowKeysSigned(e) {
-  var k = e.key;
-  var c = e.code || '';
-  if (
-    k === 'Backspace' || k === 'Delete' || k === 'Tab' ||
-    k === 'ArrowLeft' || k === 'ArrowRight' || k === 'Home' || k === 'End' ||
-    (/^\d$/.test(k)) || k === '.' || k === ',' || k === 'Decimal' || c === 'NumpadDecimal' || k === '-'
-  ) return;
-  e.preventDefault();
-}
-
+    var k = e.key;
+    var c = e.code || '';
+    if (
+      k === 'Backspace' || k === 'Delete' || k === 'Tab' ||
+      k === 'ArrowLeft' || k === 'ArrowRight' || k === 'Home' || k === 'End' ||
+      (/^\d$/.test(k)) || k === '.' || k === ',' || k === 'Decimal' || c === 'NumpadDecimal' || k === '-'
+    ) return;
+    e.preventDefault();
+  }
 
   // positive-decimal fields (off-hub + min margin)
   $(document).on('keydown', POSITIVE_DECIMALS, allowKeysPositive);
@@ -191,8 +193,6 @@ jQuery(function ($) {
     updateEffectiveStandings();
     updateFeesDisplay();
   });
-  // ensure decimal keypad + free decimal typing for standings
-
   // make them show placeholder 0.00 and start empty
   $(STANDINGS_INPUTS).attr({
     inputmode: 'decimal',
@@ -206,11 +206,11 @@ jQuery(function ($) {
     if (v === '0' || v === '0.0' || v === '0.00') { $(this).val(''); }
   });
 
-  
   // initial compute so fees reflect default 0.00 values
   updateEffectiveStandings();
   updateFeesDisplay();
-// ---------- standings & fee math ----------
+
+  // ---------- standings & fee math ----------
   function calcEffectiveStanding(baseStanding, connectionsSkill, diplomacySkill) {
     baseStanding = Number(baseStanding) || 0;
     if (baseStanding === 0) return 0;
@@ -549,18 +549,20 @@ jQuery(function ($) {
   }
 
   function saveStandingsToLocalStorage() {
-  try {
-    var data = {};
-    $(STANDINGS_INPUTS).each(function(){
-      var id = this.id || $(this).data('standing');
-      var raw = String($(this).val() || '').trim();
-      if (raw === '') return; // don't store empties; base defaults to 0
-      data[id] = raw;
-    });
-    localStorage.setItem('emc_standings', JSON.stringify(data));
-  } catch (e) {}
-};
-// ---------- fee table build ----------
+    try {
+      var data = {};
+      $(STANDINGS_INPUTS).each(function(){
+        var id = this.id || $(this).data('standing');
+        var raw = String($(this).val() || '').trim();
+        if (raw === '') return; // don't store empties; base defaults to 0
+        data[id] = raw;
+      });
+      // FIX: use key constant consistently
+      localStorage.setItem(LS_STANDINGS, JSON.stringify(data));
+    } catch (e) {}
+  }
+
+  // ---------- fee table build ----------
   function updateFeesDisplay() {
     var acct  = +$('.emc-skill-select[data-skill="accounting"]').val() || 0;
     var br    = +$('.emc-skill-select[data-skill="broker_relations"]').val() || 0;
@@ -667,13 +669,13 @@ jQuery(function ($) {
       this.style.background = 'transparent';
     });
     var el = document.getElementById('eve-mc-extended');
-        if (el) {
-          el.style.setProperty('--min-margin', String(margins.length ? Math.min.apply(null, margins) : 0));
-          el.style.setProperty('--max-margin', String(margins.length ? Math.max.apply(null, margins) : 0));
-        }
-      }
+    if (el) {
+      el.style.setProperty('--min-margin', String(margins.length ? Math.min.apply(null, margins) : 0));
+      el.style.setProperty('--max-margin', String(margins.length ? Math.max.apply(null, margins) : 0));
+    }
+  }
 
-  // ---------- persist/restore standings ----------
+  // ---------- persist/restore settings ----------
   function restoreStandings() {
     try {
       var raw = localStorage.getItem(LS_STANDINGS);
@@ -689,6 +691,30 @@ jQuery(function ($) {
         }
       });
     } catch(e){}
+  }
+  
+  function restoreExtPrefs() {
+    try {
+      // --- limit toggle ---
+      var lim = localStorage.getItem(LS_EXT_LIMIT);
+      if (lim !== null) {
+        var on = lim === '1';
+        $('#emc-limit-60k').prop('checked', on);
+      }
+
+      // --- hubs selection ---
+      var raw = localStorage.getItem(LS_EXT_HUBS);
+      if (raw) {
+        var wanted = JSON.parse(raw); // array of values (strings)
+        if (Array.isArray(wanted)) {
+          // clear first, then check the saved ones that still exist
+          $('#emc-hub-filters-best .emc-hub-toggle').each(function () {
+            var v = String($(this).val());
+            $(this).prop('checked', wanted.indexOf(v) !== -1);
+          });
+        }
+      }
+    } catch (e) {}
   }
 
   // ---------- no-undock trading ----------
@@ -943,7 +969,6 @@ jQuery(function ($) {
     var $btn = $(this);
     if ($btn.prop('disabled')) return;
 
-
     // Downtime guard: block refresh within 10:55–11:30 UTC
     if (emcIsDowntimeUtc()) {
       emcShowDowntimeMessage();
@@ -983,7 +1008,6 @@ jQuery(function ($) {
             if (resp.downtime_lines[1]) $('<span/>', { 'class': 'emc-status-sub',  text: resp.downtime_lines[1] }).appendTo($st);
           }
     
-
           if (resp.refreshed) {
             if (resp.partial || resp.used_stale_backup) {
               $status.empty()
@@ -1182,6 +1206,12 @@ jQuery(function ($) {
       restoreStandings();
       updateEffectiveStandings();
       updateFeesDisplay();
+      restoreExtPrefs();
+    }
+    // NEW: live-sync the extended prefs too
+    if (e.key === LS_EXT_LIMIT || e.key === LS_EXT_HUBS) {
+      restoreExtPrefs();
+      updateExtendedTradeTable();
     }
   });
 
@@ -1206,6 +1236,7 @@ jQuery(function ($) {
     // restore standings BEFORE fee calc and render live effective
     restoreStandings();
     updateEffectiveStandings();
+    restoreExtPrefs();
 
     // restore dropdown choices BEFORE any table calculations
     var savedBuy = null, savedSell = null;
@@ -1287,7 +1318,21 @@ jQuery(function ($) {
     try { localStorage.setItem(LS_SELL_TO, this.value); } catch (e) {}
     updateExtendedTradeTable();
   });
-  $(document).on('change', '#emc-limit-60k, .emc-hub-toggle', updateExtendedTradeTable);
+  // limit toggle
+  $(document).on('change', '#emc-limit-60k', function () {
+    try { localStorage.setItem(LS_EXT_LIMIT, this.checked ? '1' : '0'); } catch(e){}
+    updateExtendedTradeTable();
+  });
+
+  // hub checkboxes
+  $(document).on('change', '.emc-hub-toggle', function () {
+    try {
+      var sel = $('#emc-hub-filters-best .emc-hub-toggle:checked')
+        .map(function(){ return String($(this).val()); }).get();
+      localStorage.setItem(LS_EXT_HUBS, JSON.stringify(sel));
+    } catch(e){}
+    updateExtendedTradeTable();
+  });
   $(document).on('input',  '#emc-min-margin', debounce(updateExtendedTradeTable, 200));
 
   // Live updates for skills & standings (no clamp while typing)
@@ -1303,6 +1348,7 @@ jQuery(function ($) {
         var v = parseFloat(raw);
         all[key] = Number.isFinite(v) ? v : 0;
       });
+      // FIX: use key constant consistently
       localStorage.setItem(LS_STANDINGS, JSON.stringify(all));
     } catch(e){}
   }, 150));
@@ -1334,6 +1380,7 @@ jQuery(function ($) {
   var LS_ADV_TAX    = 'emcAdvTax';
   var LS_ADV_ROWS   = 'emcAdvRows';       // { buys:[], sells:[] }
   var LS_ADV_TOGGLES= 'emcAdvToggles';    // { buyBroker:Boolean, sellBroker:Boolean, sellTax:Boolean }
+  // NOTE: LS_EXT_HUBS and LS_EXT_LIMIT are defined in the top-level scope
 
   // Ensure our targets also get the plugin's decimal filtering
   $(function(){
