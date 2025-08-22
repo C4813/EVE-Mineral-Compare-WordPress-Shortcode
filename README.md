@@ -27,7 +27,7 @@ Price Data is cached in `wp-content/uploads/eve-mineral-compare/cache`.
   Simulate trades between hubs, applying skill and standing-based fee reductions, volume limits, and a minimum margin filter.
 
 - **No-Undock Trade Simulation**
-  See the margin percentage for buying from buy and selling to sell within the same trade hubs.
+  See the margin percentage for buying from buy and selling to sell within the same trade hub.
 
 - **Off-Hub Margin Calculation**
   Enter custom brokerage fees / sales tax and buy/sell values for minerals to see the margin. This is useful for buying low outside of a trade hub and selling high elsewhere/at a trade hub.
@@ -37,6 +37,3 @@ Price Data is cached in `wp-content/uploads/eve-mineral-compare/cache`.
 
 - **AJAX Price Refresh**  
   Refresh market data without reloading the page — with caching to avoid unnecessary API calls.
-
-- **Volume Limiting**  
-  Option to restrict calculations to minerals fitting within 60,000m³ of cargo space.
